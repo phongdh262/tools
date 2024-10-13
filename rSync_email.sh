@@ -10,12 +10,19 @@ cat << "EOF"
 ██║  ██║███████╗██████╔╝██║╚██████╔╝██║
 ╚═╝  ╚═╝╚══════╝╚═════╝ ╚═╝ ╚═════╝ ╚═╝
 
+
 EOF
 
 # Hàm để đọc file CSV và trả về danh sách người dùng và mật khẩu
 read_credentials() {
     local file_path="$1"
-    while IFS=';,' read -r user1 pass1 user2 pass2; do
+    while IFS=',' read -r user1 pass1 user2 pass2; do
+        # Loại bỏ các ký tự xuống dòng nếu có
+        user1=$(echo "$user1" | tr -d '\r')
+        pass1=$(echo "$pass1" | tr -d '\r')
+        user2=$(echo "$user2" | tr -d '\r')
+        pass2=$(echo "$pass2" | tr -d '\r')
+
         echo "$user1,$pass1,$user2,$pass2"
     done < "$file_path"
 }
@@ -31,26 +38,10 @@ sync_emails() {
     [ -e "$log_file" ] && rm "$log_file"
 
     # Đọc từng dòng từ file credentials và thực hiện đồng bộ
-    while IFS=';,' read -r user1 pass1 user2 pass2; do
-        echo "$user1,$pass1,$user2,$pass2"
-    done < "$file_path"
-}
-
-# Hàm để thực hiện đồng bộ email
-sync_emails() {
-    local source="$1"
-    local dest="$2"
-    local credentials_file="$3"
-    local log_file="error_log.txt"
-
-    # Xóa file log cũ nếu có
-    [ -e "$log_file" ] && rm "$log_file"
-
-    # Đọc từng dòng từ file credentials và thực hiện đồng bộ
-    while IFS=, read -r user1 pass1 user2 pass2; do
+    while IFS=',' read -r user1 pass1 user2 pass2; do
         echo "Syncing $user1 to $user2..."
 
-        # Thực hiện lệnh imapsync
+        # Thực hiện lệnh imapsync với các biến được đóng trong dấu ngoặc kép
         imapsync --host1 "$source" --user1 "$user1" --password1 "$pass1" --ssl1 \
                  --host2 "$dest" --user2 "$user2" --password2 "$pass2" --ssl2
         if [ $? -ne 0 ]; then
