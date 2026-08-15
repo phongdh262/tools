@@ -21,7 +21,7 @@ export async function generateMetadata(): Promise<Metadata> {
 
   return {
     metadataBase: new URL(origin),
-    title: "Nexa Tools — DNS, SSL & Domain Intelligence",
+    title: "TwoK TOOLS — DNS, SSL & Domain Intelligence",
     description: "Bộ công cụ kiểm tra DNS, SSL, tên miền, HTTP headers và bảo mật email trực tiếp, nhanh và rõ ràng.",
     icons: {
       icon: "/favicon.svg",
@@ -31,16 +31,16 @@ export async function generateMetadata(): Promise<Metadata> {
       type: "website",
       locale: "vi_VN",
       url: origin,
-      siteName: "Nexa Tools",
-      title: "Nexa Tools — DNS, SSL & Domain Intelligence",
+      siteName: "TwoK TOOLS",
+      title: "TwoK TOOLS — DNS, SSL & Domain Intelligence",
       description: "Mọi tín hiệu hạ tầng trong một lần kiểm tra.",
-      images: [{ url: `${origin}/og-yellow.png`, width: 1731, height: 909, alt: "Nexa Tools — DNS, SSL & Domain Intelligence" }],
+      images: [{ url: `${origin}/og-twok.png`, width: 1731, height: 909, alt: "TwoK TOOLS — DNS, SSL & Domain Intelligence" }],
     },
     twitter: {
       card: "summary_large_image",
-      title: "Nexa Tools — DNS, SSL & Domain Intelligence",
+      title: "TwoK TOOLS — DNS, SSL & Domain Intelligence",
       description: "Mọi tín hiệu hạ tầng trong một lần kiểm tra.",
-      images: [`${origin}/og-yellow.png`],
+      images: [`${origin}/og-twok.png`],
     },
   };
 }

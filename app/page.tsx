@@ -194,6 +194,10 @@ function ResultIcon({ ok }: { ok: boolean }) {
   return <span className={ok ? "status-icon ok" : "status-icon warn"}>{ok ? "✓" : "!"}</span>;
 }
 
+function RubikLogo() {
+  return <span className="rubik-mark" aria-hidden="true">{Array.from({ length: 9 }, (_, index) => <i key={index} />)}</span>;
+}
+
 function DnsRecordsPanel({ dns, view }: { dns: Record<string, DnsAnswer[]>; view: DnsView }) {
   const visibleTypes = view === "overview" ? recordTypes : [view as (typeof recordTypes)[number]];
 
@@ -387,9 +391,9 @@ export default function Home() {
         <div className="beam beam-b" aria-hidden="true" />
 
         <header className="nav-shell">
-          <a className="brand" href="#home" aria-label="Nexa Tools — Trang chủ">
-            <span className="brand-mark"><i /><i /><i /></span>
-            <span>NEXA<span className="brand-muted">TOOLS</span></span>
+          <a className="brand" href="#home" aria-label="TwoK TOOLS — Trang chủ">
+            <RubikLogo />
+            <span className="brand-name">TwoK <span className="brand-muted">TOOLS</span></span>
           </a>
           <nav className="desktop-nav" aria-label="Điều hướng chính">
             <a href="#tools">Công cụ</a>
@@ -648,7 +652,7 @@ export default function Home() {
                     </>
                   )}
                 </div>
-                <button className="copy-report" type="button" onClick={() => navigator.clipboard?.writeText(`Nexa Tools report — ${result.domain}: ${result.score}/100`)}>Sao chép tóm tắt <span>⌘C</span></button>
+                <button className="copy-report" type="button" onClick={() => navigator.clipboard?.writeText(`TwoK TOOLS report — ${result.domain}: ${result.score}/100`)}>Sao chép tóm tắt <span>⌘C</span></button>
               </div>
             ) : (
               <div className="console-empty">
@@ -699,7 +703,7 @@ export default function Home() {
         <div className="insight-copy">
           <span className="section-kicker light">04 / BUILT FOR CLARITY</span>
           <h2>Không chỉ là<br />một dòng kết quả.</h2>
-          <p>Nexa cho bạn thấy điều gì đang hoạt động, điều gì cần chú ý và dữ liệu đến từ đâu—trong cùng một giao diện.</p>
+          <p>TwoK TOOLS cho bạn thấy điều gì đang hoạt động, điều gì cần chú ý và dữ liệu đến từ đâu—trong cùng một giao diện.</p>
           <a href="#scanner">Chạy lần kiểm tra đầu tiên <span>↗</span></a>
         </div>
         <div className="insight-board" aria-hidden="true">
@@ -724,11 +728,11 @@ export default function Home() {
 
       <footer>
         <a className="brand footer-brand" href="#home">
-          <span className="brand-mark"><i /><i /><i /></span>
-          <span>NEXA<span className="brand-muted">TOOLS</span></span>
+          <RubikLogo />
+          <span className="brand-name">TwoK <span className="brand-muted">TOOLS</span></span>
         </a>
         <p>Internet intelligence for everyone.</p>
-        <div><span>© 2026 NEXA TOOLS</span><a href="#home">LÊN ĐẦU TRANG ↑</a></div>
+        <div><span>© 2026 TWOK TOOLS</span><a href="#home">LÊN ĐẦU TRANG ↑</a></div>
       </footer>
     </main>
   );

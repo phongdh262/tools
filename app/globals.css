@@ -58,11 +58,11 @@ button { color: inherit; }
 }
 .brand { display: inline-flex; align-items: center; gap: 12px; font-size: 14px; letter-spacing: .18em; font-weight: 800; white-space: nowrap; }
 .brand-muted { color: #8392c8; margin-left: 3px; font-weight: 500; }
-.brand-mark { width: 27px; height: 24px; display: flex; gap: 3px; align-items: flex-end; transform: skew(-12deg); }
-.brand-mark i { width: 6px; display: block; background: #fff; border-radius: 1px; }
-.brand-mark i:nth-child(1) { height: 13px; }
-.brand-mark i:nth-child(2) { height: 22px; background: #587aff; }
-.brand-mark i:nth-child(3) { height: 17px; }
+.rubik-mark { width: 24px; height: 24px; flex: 0 0 auto; display: grid; grid-template-columns: repeat(3, 6px); grid-template-rows: repeat(3, 6px); gap: 2px; padding: 1px; border-radius: 2px; background: #090906; box-shadow: 4px 3px 0 #9d7900; transform: rotate(-7deg) skewY(-2deg); }
+.rubik-mark i { display: block; border-radius: 1px; background: #ffd84d; }
+.rubik-mark i:nth-child(2), .rubik-mark i:nth-child(6), .rubik-mark i:nth-child(7) { background: #fffdf4; }
+.rubik-mark i:nth-child(3), .rubik-mark i:nth-child(5), .rubik-mark i:nth-child(9) { background: #d5a900; }
+.brand-name { letter-spacing: .08em; }
 .desktop-nav { display: flex; align-items: center; gap: 36px; font-size: 13px; color: rgba(255,255,255,.68); }
 .desktop-nav a { transition: color .2s ease; }
 .desktop-nav a:hover { color: white; }
@@ -329,7 +329,7 @@ footer > div a:hover { color: white; }
   .nav-cta { padding: 0 16px; min-height: 45px; }
   .nav-cta b { display: none; }
   .brand { font-size: 12px; }
-  .brand-mark { transform: scale(.85) skew(-12deg); margin-right: -3px; }
+  .rubik-mark { transform: scale(.86) rotate(-7deg) skewY(-2deg); margin-right: -2px; }
   .hero { min-height: 820px; }
   .hero-content { padding-top: 160px; }
   .hero h1 { font-size: clamp(45px, 13vw, 65px); }
@@ -544,8 +544,17 @@ footer > div a:hover { color: white; }
   color: var(--text);
 }
 .app-theme .brand-muted { color: var(--muted-text); }
-.app-theme .brand-mark i { background: var(--text); }
-.app-theme .brand-mark i:nth-child(2) { background: var(--accent-theme); }
+.app-theme .rubik-mark { background: var(--text); box-shadow: 4px 3px 0 var(--accent-strong); }
+.app-theme .rubik-mark i { background: var(--accent-theme); }
+.app-theme .rubik-mark i:nth-child(2),
+.app-theme .rubik-mark i:nth-child(6),
+.app-theme .rubik-mark i:nth-child(7) { background: #fffdf4; }
+.app-theme.light .rubik-mark i:nth-child(2),
+.app-theme.light .rubik-mark i:nth-child(6),
+.app-theme.light .rubik-mark i:nth-child(7) { background: #ffffff; }
+.app-theme .rubik-mark i:nth-child(3),
+.app-theme .rubik-mark i:nth-child(5),
+.app-theme .rubik-mark i:nth-child(9) { background: var(--accent-strong); }
 .theme-toggle {
   height: 42px;
   display: flex;
