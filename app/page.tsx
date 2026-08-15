@@ -3,6 +3,7 @@
 import { FormEvent, useMemo, useState } from "react";
 
 type ToolId = "dns" | "ssl" | "domain" | "headers" | "mail" | "propagation";
+type DnsView = "overview" | "A" | "AAAA" | "MX" | "NS" | "TXT" | "CAA" | "email";
 
 type DnsAnswer = { name: string; type: number; TTL: number; data: string };
 
@@ -11,6 +12,7 @@ type ScanResult = {
   duration: number;
   score: number;
   dns: Record<string, DnsAnswer[]>;
+  mailCname: DnsAnswer[];
   googleA: DnsAnswer[];
   rdap?: {
     registrar: string;
@@ -83,6 +85,16 @@ const tools: Array<{
 ];
 
 const recordTypes = ["A", "AAAA", "MX", "NS", "TXT", "CAA"] as const;
+const dnsViews: Array<{ value: DnsView; label: string }> = [
+  { value: "overview", label: "Tổng quan DNS" },
+  { value: "A", label: "A — IPv4" },
+  { value: "AAAA", label: "AAAA — IPv6" },
+  { value: "MX", label: "MX — Mail server" },
+  { value: "NS", label: "NS — Nameserver" },
+  { value: "TXT", label: "TXT records" },
+  { value: "CAA", label: "CAA — Certificate" },
+  { value: "email", label: "Email Health" },
+];
 
 function normalizeDomain(value: string) {
   return value
@@ -182,6 +194,35 @@ function ResultIcon({ ok }: { ok: boolean }) {
   return <span className={ok ? "status-icon ok" : "status-icon warn"}>{ok ? "✓" : "!"}</span>;
 }
 
+function DnsRecordsPanel({ dns, view }: { dns: Record<string, DnsAnswer[]>; view: DnsView }) {
+  const visibleTypes = view === "overview" ? recordTypes : [view as (typeof recordTypes)[number]];
+
+  return (
+    <div className="dns-record-groups">
+      {visibleTypes.map((type) => {
+        const records = dns[type] || [];
+        return (
+          <section className="dns-record-group" key={type}>
+            <header>
+              <div><span className="record-type">{type}</span><strong>{type === "A" ? "IPv4 address" : type === "AAAA" ? "IPv6 address" : type === "MX" ? "Mail exchange" : type === "NS" ? "Authoritative nameserver" : type === "TXT" ? "Text policy" : "Certificate authority"}</strong></div>
+              <em>{records.length} RECORD{records.length === 1 ? "" : "S"}</em>
+            </header>
+            {records.length ? records.map((record, index) => (
+              <div className="dns-record-row" key={`${record.data}-${index}`}>
+                <code>{cleanRecord(record.data)}</code>
+                <span>TTL {record.TTL}s</span>
+              </div>
+            )) : (
+              <div className="dns-empty-row"><ResultIcon ok={false} /><span>Không tìm thấy bản ghi {type}</span></div>
+            )}
+          </section>
+        );
+      })}
+      <div className="dns-source-note"><span>◎</span><p>Dữ liệu trực tiếp từ Cloudflare DNS. Kết quả cục bộ có thể khác cho đến khi TTL hết hạn.</p></div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [domain, setDomain] = useState("example.com");
   const [activeTool, setActiveTool] = useState<ToolId>("dns");
@@ -189,6 +230,13 @@ export default function Home() {
   const [error, setError] = useState("");
   const [result, setResult] = useState<ScanResult | null>(null);
   const [progress, setProgress] = useState(0);
+  const [dnsView, setDnsView] = useState<DnsView>("overview");
+  const [dkimSelector, setDkimSelector] = useState("default");
+  const [dkimResult, setDkimResult] = useState<{ loading: boolean; records: DnsAnswer[] | null; host: string }>({
+    loading: false,
+    records: null,
+    host: "",
+  });
 
   const active = tools.find((tool) => tool.id === activeTool) || tools[0];
 
@@ -220,6 +268,7 @@ export default function Home() {
     setError("");
     setScanning(true);
     setProgress(10);
+    setDkimResult({ loading: false, records: null, host: "" });
     const startedAt = performance.now();
 
     try {
@@ -242,6 +291,10 @@ export default function Home() {
       window.clearInterval(progressTimer);
       const dns = Object.fromEntries(dnsEntries) as Record<string, DnsAnswer[]>;
       dns.DMARC = dmarc;
+      const mxHosts = (dns.MX || [])
+        .map((record) => record.data.trim().split(/\s+/).pop()?.replace(/\.$/, ""))
+        .filter((host): host is string => Boolean(host));
+      const mailCname = (await Promise.all(mxHosts.slice(0, 5).map((host) => queryDns(host, "CNAME")))).flat();
       const rdap = rdapResponse
         ? {
             registrar: getRegistrar(rdapResponse),
@@ -272,6 +325,7 @@ export default function Home() {
         duration: Math.max(0.2, (performance.now() - startedAt) / 1000),
         score,
         dns,
+        mailCname,
         googleA,
         rdap,
         https,
@@ -282,6 +336,24 @@ export default function Home() {
       setScanning(false);
       setProgress(0);
     }
+  }
+
+  async function checkDkim(event: FormEvent) {
+    event.preventDefault();
+    if (!result) return;
+    const selector = dkimSelector.trim().toLowerCase().replace(/^\.+|\.+$/g, "");
+    if (!selector || !/^[a-z0-9._-]+$/.test(selector)) {
+      setDkimResult({ loading: false, records: [], host: "Selector không hợp lệ" });
+      return;
+    }
+    const host = selector.includes("._domainkey.")
+      ? selector
+      : selector.endsWith("._domainkey")
+        ? `${selector}.${result.domain}`
+        : `${selector}._domainkey.${result.domain}`;
+    setDkimResult({ loading: true, records: null, host });
+    const records = await queryDns(host, "TXT");
+    setDkimResult({ loading: false, records, host });
   }
 
   function selectTool(id: ToolId) {
@@ -400,8 +472,18 @@ export default function Home() {
             <p>{active.description}</p>
 
             <form className="scanner-form" onSubmit={runScan}>
-              <label htmlFor="scanner-domain">Tên miền cần phân tích</label>
-              <div>
+              <div className="scanner-label-row">
+                <label htmlFor="scanner-domain">Tên miền cần phân tích</label>
+                {activeTool === "dns" && (
+                  <label className="dns-view-label">
+                    <span>Loại truy vấn</span>
+                    <select value={dnsView} onChange={(event) => setDnsView(event.target.value as DnsView)}>
+                      {dnsViews.map((view) => <option key={view.value} value={view.value}>{view.label}</option>)}
+                    </select>
+                  </label>
+                )}
+              </div>
+              <div className="scanner-input-row">
                 <input
                   id="scanner-domain"
                   value={domain}
@@ -448,15 +530,64 @@ export default function Home() {
 
                 <div className="result-list">
                   {activeTool === "dns" && (
-                    <>
-                      {(["A", "AAAA", "MX", "NS", "TXT"] as const).map((type) => (
-                        <div className="result-item" key={type}>
-                          <ResultIcon ok={(result.dns[type] || []).length > 0} />
-                          <span><b>{type} records</b><small>{(result.dns[type] || []).slice(0, 2).map((item) => cleanRecord(item.data)).join(" · ") || "Không tìm thấy bản ghi"}</small></span>
-                          <em>{(result.dns[type] || []).length}</em>
+                    dnsView === "email" ? (
+                      <div className="email-health-panel">
+                        <div className="health-summary">
+                          <div><ResultIcon ok={summary.mx} /><span><b>MX</b><small>{summary.mx ? "PASS" : "FAIL"}</small></span></div>
+                          <div><ResultIcon ok={summary.spf} /><span><b>SPF</b><small>{summary.spf ? "PASS" : "WARN"}</small></span></div>
+                          <div><ResultIcon ok={summary.dmarc} /><span><b>DMARC</b><small>{summary.dmarc ? "PASS" : "WARN"}</small></span></div>
                         </div>
-                      ))}
-                    </>
+
+                        <section className="email-check-block">
+                          <header><div><span>MX</span><strong>Mail Exchange</strong></div><em className={summary.mx ? "pass" : "warning"}>{summary.mx ? "PASS" : "NOT FOUND"}</em></header>
+                          <div className="email-values">
+                            {(result.dns.MX || []).length ? (result.dns.MX || []).map((record, index) => (
+                              <code key={`${record.data}-${index}`}><b>{record.data.trim().split(/\s+/)[0]}</b>{record.data.trim().split(/\s+/).slice(1).join(" ")}<span>TTL {record.TTL}s</span></code>
+                            )) : <p>Không tìm thấy máy chủ nhận mail.</p>}
+                          </div>
+                        </section>
+
+                        <section className="email-check-block">
+                          <header><div><span>CN</span><strong>Mail host CNAME</strong></div><em>{result.mailCname.length ? "ALIAS" : "DIRECT"}</em></header>
+                          <div className="email-values">
+                            {result.mailCname.length ? result.mailCname.map((record, index) => <code key={`${record.data}-${index}`}>{record.name} <i>→</i> {record.data}<span>TTL {record.TTL}s</span></code>) : <p>Mail host trỏ trực tiếp, không có CNAME trung gian.</p>}
+                          </div>
+                        </section>
+
+                        <section className="email-check-block">
+                          <header><div><span>SP</span><strong>SPF policy</strong></div><em className={summary.spf ? "pass" : "warning"}>{summary.spf ? "PASS" : "MISSING"}</em></header>
+                          <div className="email-values">
+                            {(result.dns.TXT || []).filter((record) => record.data.toLowerCase().includes("v=spf1")).map((record, index) => <code key={`${record.data}-${index}`}>{cleanRecord(record.data)}<span>TTL {record.TTL}s</span></code>)}
+                            {!summary.spf && <p>Chưa có chính sách SPF. Email gửi đi có thể dễ bị giả mạo hơn.</p>}
+                          </div>
+                        </section>
+
+                        <section className="email-check-block">
+                          <header><div><span>DM</span><strong>DMARC policy</strong></div><em className={summary.dmarc ? "pass" : "warning"}>{summary.dmarc ? "PASS" : "MISSING"}</em></header>
+                          <div className="email-values">
+                            {(result.dns.DMARC || []).map((record, index) => <code key={`${record.data}-${index}`}>{cleanRecord(record.data)}<span>TTL {record.TTL}s</span></code>)}
+                            {!summary.dmarc && <p>Chưa có DMARC tại _dmarc.{result.domain}.</p>}
+                          </div>
+                        </section>
+
+                        <section className="dkim-check-block">
+                          <header><div><span>DK</span><strong>DKIM record check</strong></div>{dkimResult.records && <em className={dkimResult.records.length ? "pass" : "warning"}>{dkimResult.records.length ? "PASS" : "NOT FOUND"}</em>}</header>
+                          <form onSubmit={checkDkim}>
+                            <label><span>Domain</span><input value={result.domain} readOnly /></label>
+                            <label><span>Selector</span><input value={dkimSelector} onChange={(event) => setDkimSelector(event.target.value)} placeholder="default" /></label>
+                            <button type="submit" disabled={dkimResult.loading}>{dkimResult.loading ? "Đang kiểm tra…" : "Check DKIM"}</button>
+                          </form>
+                          {dkimResult.records && (
+                            <div className={`dkim-output ${dkimResult.records.length ? "found" : "missing"}`}>
+                              <span>{dkimResult.host}</span>
+                              <code>{dkimResult.records.length ? dkimResult.records.map((record) => cleanRecord(record.data)).join("\n") : "Không tìm thấy TXT record cho selector này."}</code>
+                            </div>
+                          )}
+                        </section>
+
+                        <div className="dns-source-note"><span>◎</span><p>Kết quả truy vấn trực tiếp có thể khác nameserver cục bộ trong thời gian bản ghi đang chờ hết TTL.</p></div>
+                      </div>
+                    ) : <DnsRecordsPanel dns={result.dns} view={dnsView} />
                   )}
                   {activeTool === "ssl" && (
                     <>
