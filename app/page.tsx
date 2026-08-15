@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 type ToolId = "dns" | "ssl" | "domain" | "headers" | "mail" | "propagation";
-type DnsView = "overview" | "A" | "AAAA" | "MX" | "NS" | "TXT" | "CAA" | "email";
+type DnsView = "overview" | "A" | "AAAA" | "MX" | "NS" | "TXT" | "CAA" | "PTR" | "email";
 
 type DnsAnswer = { name: string; type: number; TTL: number; data: string };
 
@@ -93,24 +93,51 @@ const dnsViews: Array<{ value: DnsView; label: string }> = [
   { value: "NS", label: "NS — Nameserver" },
   { value: "TXT", label: "TXT records" },
   { value: "CAA", label: "CAA — Certificate" },
+  { value: "PTR", label: "PTR — Reverse DNS" },
   { value: "email", label: "Email Health" },
 ];
 
-function normalizeDomain(value: string) {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\//, "")
-    .replace(/^www\./, "")
-    .split("/")[0]
-    .split(":")[0]
-    .replace(/\.$/, "");
+function normalizeTarget(value: string) {
+  const target = value.trim().toLowerCase().replace(/^https?:\/\//, "").split("/")[0];
+  if (target.startsWith("[") && target.includes("]")) return target.slice(1, target.indexOf("]"));
+  if ((target.match(/:/g) || []).length > 1) return target.split("%")[0];
+  return target.replace(/^www\./, "").replace(/:\d+$/, "").replace(/\.$/, "");
 }
 
 function isDomain(value: string) {
   return /^(?=.{3,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(
     value,
   );
+}
+
+function isIpv4(value: string) {
+  const parts = value.split(".");
+  return parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
+}
+
+function isIpv6(value: string) {
+  if (!value.includes(":")) return false;
+  const halves = value.split("::");
+  if (halves.length > 2) return false;
+  const left = halves[0] ? halves[0].split(":") : [];
+  const right = halves[1] ? halves[1].split(":") : [];
+  const validParts = [...left, ...right].every((part) => /^[0-9a-f]{1,4}$/i.test(part));
+  return validParts && (halves.length === 2 ? left.length + right.length < 8 : left.length === 8);
+}
+
+function isIp(value: string) {
+  return isIpv4(value) || isIpv6(value);
+}
+
+function reverseDnsName(value: string) {
+  if (isIpv4(value)) return `${value.split(".").reverse().join(".")}.in-addr.arpa`;
+  const [leftPart, rightPart = ""] = value.split("::");
+  const left = leftPart ? leftPart.split(":") : [];
+  const right = rightPart ? rightPart.split(":") : [];
+  const expanded = [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right]
+    .map((part) => part.padStart(4, "0"))
+    .join("");
+  return `${expanded.split("").reverse().join(".")}.ip6.arpa`;
 }
 
 function cleanRecord(value: string) {
@@ -169,8 +196,9 @@ async function queryDns(name: string, type: string, provider: "cloudflare" | "go
 
 async function inspectHttps(domain: string) {
   const timeout = withTimeout();
+  const host = isIpv6(domain) ? `[${domain}]` : domain;
   try {
-    const response = await fetch(`https://${domain}`, {
+    const response = await fetch(`https://${host}`, {
       method: "HEAD",
       signal: timeout.controller.signal,
     });
@@ -180,7 +208,7 @@ async function inspectHttps(domain: string) {
     };
   } catch {
     try {
-      await fetch(`https://${domain}`, { mode: "no-cors", signal: timeout.controller.signal });
+      await fetch(`https://${host}`, { mode: "no-cors", signal: timeout.controller.signal });
       return { reachable: true, headers: {} };
     } catch {
       return { reachable: false, headers: {} };
@@ -199,7 +227,7 @@ function RubikLogo() {
 }
 
 function DnsRecordsPanel({ dns, view }: { dns: Record<string, DnsAnswer[]>; view: DnsView }) {
-  const visibleTypes = view === "overview" ? recordTypes : [view as (typeof recordTypes)[number]];
+  const visibleTypes: readonly string[] = view === "overview" ? recordTypes : [view];
 
   return (
     <div className="dns-record-groups">
@@ -208,7 +236,7 @@ function DnsRecordsPanel({ dns, view }: { dns: Record<string, DnsAnswer[]>; view
         return (
           <section className="dns-record-group" key={type}>
             <header>
-              <div><span className="record-type">{type}</span><strong>{type === "A" ? "IPv4 address" : type === "AAAA" ? "IPv6 address" : type === "MX" ? "Mail exchange" : type === "NS" ? "Authoritative nameserver" : type === "TXT" ? "Text policy" : "Certificate authority"}</strong></div>
+              <div><span className="record-type">{type}</span><strong>{type === "A" ? "IPv4 address" : type === "AAAA" ? "IPv6 address" : type === "MX" ? "Mail exchange" : type === "NS" ? "Authoritative nameserver" : type === "TXT" ? "Text policy" : type === "PTR" ? "Reverse DNS pointer" : "Certificate authority"}</strong></div>
               <em>{records.length} RECORD{records.length === 1 ? "" : "S"}</em>
             </header>
             {records.length ? records.map((record, index) => (
@@ -246,7 +274,7 @@ export default function Home() {
   const active = tools.find((tool) => tool.id === activeTool) || tools[0];
 
   useEffect(() => {
-    const saved = window.localStorage.getItem("nexa-theme");
+    const saved = window.localStorage.getItem("twok-theme");
     if (saved === "dark" || saved === "light") {
       setTheme(saved);
       return;
@@ -257,7 +285,7 @@ export default function Home() {
   function toggleTheme() {
     const nextTheme = theme === "dark" ? "light" : "dark";
     setTheme(nextTheme);
-    window.localStorage.setItem("nexa-theme", nextTheme);
+    window.localStorage.setItem("twok-theme", nextTheme);
   }
 
   const summary = useMemo(() => {
@@ -278,9 +306,10 @@ export default function Home() {
 
   async function runScan(event?: FormEvent) {
     event?.preventDefault();
-    const target = normalizeDomain(domain);
-    if (!isDomain(target)) {
-      setError("Hãy nhập tên miền hợp lệ, ví dụ: nexatools.vn");
+    const target = normalizeTarget(domain);
+    const targetIsIp = isIp(target);
+    if (!isDomain(target) && !targetIsIp) {
+      setError("Hãy nhập domain hoặc địa chỉ IP hợp lệ.");
       return;
     }
 
@@ -289,6 +318,7 @@ export default function Home() {
     setScanning(true);
     setProgress(10);
     setDkimResult({ loading: false, records: null, host: "" });
+    if (targetIsIp && activeTool === "dns") setDnsView("PTR");
     const startedAt = performance.now();
 
     try {
@@ -297,12 +327,14 @@ export default function Home() {
         260,
       );
 
-      const dnsPromises = recordTypes.map(async (type) => [type, await queryDns(target, type)] as const);
+      const dnsPromises = targetIsIp
+        ? [Promise.resolve(["PTR", await queryDns(reverseDnsName(target), "PTR")] as const)]
+        : recordTypes.map(async (type) => [type, await queryDns(target, type)] as const);
       const [dnsEntries, dmarc, googleA, rdapResponse, https] = await Promise.all([
         Promise.all(dnsPromises),
-        queryDns(`_dmarc.${target}`, "TXT"),
-        queryDns(target, "A", "google"),
-        fetch(`https://rdap.org/domain/${encodeURIComponent(target)}`).then((res) =>
+        targetIsIp ? Promise.resolve([]) : queryDns(`_dmarc.${target}`, "TXT"),
+        targetIsIp ? Promise.resolve([]) : queryDns(target, "A", "google"),
+        fetch(`https://rdap.org/${targetIsIp ? "ip" : "domain"}/${encodeURIComponent(target)}`).then((res) =>
           res.ok ? res.json() : null,
         ).catch(() => null),
         inspectHttps(target),
@@ -327,17 +359,16 @@ export default function Home() {
       const hasSpf = (dns.TXT || []).some((item) => item.data.toLowerCase().includes("v=spf1"));
       const hasDmarc = dmarc.some((item) => item.data.toLowerCase().includes("v=dmarc1"));
       const propagated = (dns.A || []).some((item) => googleA.some((other) => other.data === item.data));
-      const score = Math.min(
-        100,
-        30 +
+      const score = targetIsIp
+        ? Math.min(100, 45 + (dns.PTR?.length ? 30 : 0) + (https.reachable ? 15 : 0) + (rdapResponse ? 10 : 0))
+        : Math.min(100, 30 +
           (dns.A?.length ? 10 : 0) +
           (dns.NS?.length ? 10 : 0) +
           (dns.MX?.length ? 8 : 0) +
           (hasSpf ? 10 : 0) +
           (hasDmarc ? 12 : 0) +
           (https.reachable ? 15 : 0) +
-          (propagated ? 5 : 0),
-      );
+          (propagated ? 5 : 0));
 
       setProgress(100);
       setResult({
@@ -396,16 +427,23 @@ export default function Home() {
             <span className="brand-name">TwoK <span className="brand-muted">TOOLS</span></span>
           </a>
           <nav className="desktop-nav" aria-label="Điều hướng chính">
-            <a href="#tools">Công cụ</a>
-            <a href="#workflow">Hệ thống</a>
-            <a href="#insights">Tài nguyên</a>
+            {tools.map((tool) => (
+              <button
+                key={tool.id}
+                type="button"
+                className={`menu-tool ${activeTool === tool.id ? "active" : ""}`}
+                onClick={() => selectTool(tool.id)}
+                aria-label={tool.label}
+              >
+                {tool.short}
+              </button>
+            ))}
           </nav>
           <div className="nav-actions">
             <button className="theme-toggle" type="button" onClick={toggleTheme} aria-label={`Chuyển sang giao diện ${theme === "dark" ? "sáng" : "tối"}`} aria-pressed={theme === "light"}>
               <span aria-hidden="true">{theme === "dark" ? "☀" : "☾"}</span>
               {theme === "dark" ? "Light" : "Dark"}
             </button>
-            <a className="nav-cta" href="#scanner">Kiểm tra <b>↗</b></a>
           </div>
         </header>
 
@@ -495,25 +533,20 @@ export default function Home() {
             <p>{active.description}</p>
 
             <form className="scanner-form" onSubmit={runScan}>
-              <div className="scanner-label-row">
-                <label htmlFor="scanner-domain">Tên miền cần phân tích</label>
-                {activeTool === "dns" && (
-                  <label className="dns-view-label">
-                    <span>Loại truy vấn</span>
-                    <select value={dnsView} onChange={(event) => setDnsView(event.target.value as DnsView)}>
-                      {dnsViews.map((view) => <option key={view.value} value={view.value}>{view.label}</option>)}
-                    </select>
-                  </label>
-                )}
-              </div>
+              <label className="sr-only" htmlFor="scanner-domain">Domain hoặc địa chỉ IP</label>
               <div className="scanner-input-row">
                 <input
                   id="scanner-domain"
                   value={domain}
                   onChange={(event) => setDomain(event.target.value)}
-                  placeholder="yourdomain.com"
+                  placeholder="Nhập domain hoặc IP — ví dụ 1.1.1.1"
                   spellCheck={false}
                 />
+                {activeTool === "dns" && (
+                  <select className="inline-dns-select" aria-label="Loại truy vấn DNS" value={dnsView} onChange={(event) => setDnsView(event.target.value as DnsView)}>
+                    {dnsViews.map((view) => <option key={view.value} value={view.value}>{view.label}</option>)}
+                  </select>
+                )}
                 <button type="submit" disabled={scanning}>
                   {scanning ? "Đang xử lý…" : "Kiểm tra"}<span>↗</span>
                 </button>
