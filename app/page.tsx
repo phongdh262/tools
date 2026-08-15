@@ -224,13 +224,13 @@ function DnsRecordsPanel({ dns, view }: { dns: Record<string, DnsAnswer[]>; view
 }
 
 export default function Home() {
-  const [domain, setDomain] = useState("example.com");
+  const [domain, setDomain] = useState("phongdinh.info.vn");
   const [activeTool, setActiveTool] = useState<ToolId>("dns");
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<ScanResult | null>(null);
   const [progress, setProgress] = useState(0);
-  const [dnsView, setDnsView] = useState<DnsView>("overview");
+  const [dnsView, setDnsView] = useState<DnsView>("email");
   const [dkimSelector, setDkimSelector] = useState("default");
   const [dkimResult, setDkimResult] = useState<{ loading: boolean; records: DnsAnswer[] | null; host: string }>({
     loading: false,
@@ -492,7 +492,7 @@ export default function Home() {
                   spellCheck={false}
                 />
                 <button type="submit" disabled={scanning}>
-                  {scanning ? "Đang xử lý…" : "Run check"}<span>↗</span>
+                  {scanning ? "Đang xử lý…" : "Kiểm tra"}<span>↗</span>
                 </button>
               </div>
             </form>
