@@ -34,13 +34,13 @@ export async function generateMetadata(): Promise<Metadata> {
       siteName: "Nexa Tools",
       title: "Nexa Tools — DNS, SSL & Domain Intelligence",
       description: "Mọi tín hiệu hạ tầng trong một lần kiểm tra.",
-      images: [{ url: `${origin}/og.png`, width: 1730, height: 909, alt: "Nexa Tools — DNS, SSL & Domain Intelligence" }],
+      images: [{ url: `${origin}/og-yellow.png`, width: 1731, height: 909, alt: "Nexa Tools — DNS, SSL & Domain Intelligence" }],
     },
     twitter: {
       card: "summary_large_image",
       title: "Nexa Tools — DNS, SSL & Domain Intelligence",
       description: "Mọi tín hiệu hạ tầng trong một lần kiểm tra.",
-      images: [`${origin}/og.png`],
+      images: [`${origin}/og-yellow.png`],
     },
   };
 }

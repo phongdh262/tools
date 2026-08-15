@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 
 type ToolId = "dns" | "ssl" | "domain" | "headers" | "mail" | "propagation";
 type DnsView = "overview" | "A" | "AAAA" | "MX" | "NS" | "TXT" | "CAA" | "email";
@@ -224,6 +224,7 @@ function DnsRecordsPanel({ dns, view }: { dns: Record<string, DnsAnswer[]>; view
 }
 
 export default function Home() {
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [domain, setDomain] = useState("phongdinh.info.vn");
   const [activeTool, setActiveTool] = useState<ToolId>("dns");
   const [scanning, setScanning] = useState(false);
@@ -239,6 +240,21 @@ export default function Home() {
   });
 
   const active = tools.find((tool) => tool.id === activeTool) || tools[0];
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem("nexa-theme");
+    if (saved === "dark" || saved === "light") {
+      setTheme(saved);
+      return;
+    }
+    setTheme(window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  }, []);
+
+  function toggleTheme() {
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    setTheme(nextTheme);
+    window.localStorage.setItem("nexa-theme", nextTheme);
+  }
 
   const summary = useMemo(() => {
     if (!result) return null;
@@ -362,7 +378,7 @@ export default function Home() {
   }
 
   return (
-    <main>
+    <main className={`app-theme ${theme}`}>
       <section className="hero" id="home">
         <div className="hero-grid" aria-hidden="true" />
         <div className="orb orb-one" aria-hidden="true" />
@@ -381,8 +397,11 @@ export default function Home() {
             <a href="#insights">Tài nguyên</a>
           </nav>
           <div className="nav-actions">
-            <a className="status-link" href="#scanner"><span /> Hệ thống ổn định</a>
-            <a className="nav-cta" href="#scanner">Bắt đầu kiểm tra <b>↗</b></a>
+            <button className="theme-toggle" type="button" onClick={toggleTheme} aria-label={`Chuyển sang giao diện ${theme === "dark" ? "sáng" : "tối"}`} aria-pressed={theme === "light"}>
+              <span aria-hidden="true">{theme === "dark" ? "☀" : "☾"}</span>
+              {theme === "dark" ? "Light" : "Dark"}
+            </button>
+            <a className="nav-cta" href="#scanner">Kiểm tra <b>↗</b></a>
           </div>
         </header>
 

@@ -497,3 +497,206 @@ footer > div a:hover { color: white; }
   .result-console { min-height: 540px; }
   .console-results { padding: 18px 13px; }
 }
+
+/* Yellow / white theme system */
+.app-theme {
+  --app-bg: #0f0f0c;
+  --surface: #171713;
+  --surface-raised: #1d1c16;
+  --input: #11110e;
+  --text: #f7f6ef;
+  --muted-text: #8c897e;
+  --quiet-text: #646158;
+  --border-theme: rgba(255,255,255,.11);
+  --accent-theme: #ffd84d;
+  --accent-strong: #efbd00;
+  --accent-soft: rgba(255,216,77,.11);
+  --success-theme: #9de276;
+  --warning-theme: #ffb95e;
+  min-height: 100svh;
+  color: var(--text);
+  background: var(--app-bg);
+  color-scheme: dark;
+  transition: background .2s ease, color .2s ease;
+}
+.app-theme.light {
+  --app-bg: #f7f6f1;
+  --surface: #ffffff;
+  --surface-raised: #fbfaf4;
+  --input: #ffffff;
+  --text: #181711;
+  --muted-text: #716e64;
+  --quiet-text: #9a968b;
+  --border-theme: rgba(24,23,17,.13);
+  --accent-theme: #f1c40f;
+  --accent-strong: #b98f00;
+  --accent-soft: #fff5c5;
+  --success-theme: #32834d;
+  --warning-theme: #a85b00;
+  color-scheme: light;
+}
+.app-theme .hero,
+.app-theme .tools-section,
+.app-theme .scanner-section { background: var(--app-bg); color: var(--text); }
+.app-theme .nav-shell {
+  border-color: var(--border-theme);
+  background: var(--surface);
+  color: var(--text);
+}
+.app-theme .brand-muted { color: var(--muted-text); }
+.app-theme .brand-mark i { background: var(--text); }
+.app-theme .brand-mark i:nth-child(2) { background: var(--accent-theme); }
+.theme-toggle {
+  height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border-theme);
+  border-radius: 999px;
+  padding: 0 14px;
+  background: transparent;
+  color: var(--muted-text);
+  font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.theme-toggle:hover { color: var(--text); border-color: var(--accent-theme); }
+.theme-toggle span { color: var(--accent-strong); font-size: 14px; }
+.app-theme .nav-cta,
+.app-theme .scanner-form button,
+.app-theme .dkim-check-block button {
+  background: var(--accent-theme);
+  color: #17140a;
+}
+.app-theme .nav-cta:hover,
+.app-theme .scanner-form button:hover,
+.app-theme .dkim-check-block button:hover { background: #ffe477; }
+.app-theme .tool-card {
+  border-color: var(--border-theme);
+  background: var(--surface);
+  color: var(--muted-text);
+}
+.app-theme .tool-card:hover,
+.app-theme .tool-card.active {
+  color: #17140a;
+  border-color: var(--accent-theme);
+  background: var(--accent-theme);
+}
+.app-theme .scanner-topline { border-color: var(--border-theme); }
+.app-theme .section-kicker.light { color: var(--muted-text); }
+.app-theme .live-indicator { color: var(--accent-strong); }
+.app-theme .live-indicator i { background: var(--accent-theme); box-shadow: 0 0 10px rgba(255,216,77,.55); }
+.app-theme .scanner-copy {
+  border-color: var(--border-theme);
+  background: var(--surface);
+}
+.app-theme .scanner-copy > p,
+.app-theme .privacy-note,
+.app-theme .scanner-form label { color: var(--muted-text); }
+.app-theme .privacy-note span { color: var(--accent-strong); }
+.app-theme .dns-view-label select,
+.app-theme .scanner-input-row,
+.app-theme .dkim-check-block input {
+  border-color: var(--border-theme);
+  background: var(--input);
+  color: var(--text);
+}
+.app-theme .scanner-form input { color: var(--text); }
+.app-theme .scanner-form input::placeholder,
+.app-theme .dkim-check-block input::placeholder { color: var(--quiet-text); }
+.app-theme .result-console {
+  border-color: var(--border-theme);
+  background: var(--surface-raised);
+  color: var(--text);
+}
+.app-theme.light .result-console::after {
+  background-image: linear-gradient(rgba(20,19,13,.035) 1px, transparent 1px);
+}
+.app-theme .console-header,
+.app-theme .score-row,
+.app-theme .result-item,
+.app-theme .dns-record-group header,
+.app-theme .email-check-block header,
+.app-theme .dkim-check-block header { border-color: var(--border-theme); }
+.app-theme .console-header,
+.app-theme .result-overline,
+.app-theme .score-row p,
+.app-theme .console-empty p,
+.app-theme .scanning-state p { color: var(--muted-text); }
+.app-theme .console-dots i { background: var(--border-theme); }
+.app-theme .console-dots i:first-child,
+.app-theme .empty-lines i:nth-child(2) { background: var(--accent-theme); }
+.app-theme .console-time,
+.app-theme .health-summary small,
+.app-theme .email-check-block header em.pass,
+.app-theme .dkim-check-block header em.pass { color: var(--success-theme); }
+.app-theme .score-ring { background: conic-gradient(var(--accent-theme) var(--score), var(--border-theme) 0); }
+.app-theme .score-ring > div { background: var(--surface); }
+.app-theme .dns-record-group,
+.app-theme .email-check-block,
+.app-theme .dkim-check-block,
+.app-theme .health-summary > div {
+  border-color: var(--border-theme);
+  background: var(--surface);
+}
+.app-theme .record-type,
+.app-theme .email-check-block header > div > span,
+.app-theme .dkim-check-block header > div > span {
+  border-color: var(--accent-theme);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+.app-theme .dns-record-group header em,
+.app-theme .email-check-block header em,
+.app-theme .dkim-check-block header em,
+.app-theme .dns-record-row > span,
+.app-theme .email-values code span,
+.app-theme .dkim-output > span,
+.app-theme .result-item em { color: var(--quiet-text); }
+.app-theme .dns-record-row,
+.app-theme .email-values code { border-color: var(--border-theme); }
+.app-theme .dns-record-row code,
+.app-theme .email-values code,
+.app-theme .dkim-output code,
+.app-theme .result-item small { color: var(--muted-text); }
+.app-theme .email-values code b,
+.app-theme .email-values code i,
+.app-theme .dns-source-note > span { color: var(--accent-strong); }
+.app-theme .email-values p,
+.app-theme .dns-source-note,
+.app-theme .dns-empty-row { color: var(--muted-text); }
+.app-theme .dkim-output {
+  border-color: var(--border-theme);
+  background: var(--input);
+}
+.app-theme .status-icon.ok {
+  color: var(--success-theme);
+  border-color: color-mix(in srgb, var(--success-theme), transparent 58%);
+  background: color-mix(in srgb, var(--success-theme), transparent 91%);
+}
+.app-theme .status-icon.warn {
+  color: var(--warning-theme);
+  border-color: color-mix(in srgb, var(--warning-theme), transparent 58%);
+  background: color-mix(in srgb, var(--warning-theme), transparent 91%);
+}
+.app-theme .email-check-block header em.warning,
+.app-theme .dkim-check-block header em.warning { color: var(--warning-theme); }
+.app-theme .copy-report {
+  border-color: var(--border-theme);
+  color: var(--muted-text);
+}
+.app-theme .copy-report:hover { background: var(--accent-soft); color: var(--text); }
+.app-theme .empty-symbol {
+  border-color: var(--accent-theme);
+  color: var(--accent-strong);
+  box-shadow: none;
+}
+.app-theme .radar { border-color: var(--accent-theme); }
+.app-theme .progress-track { background: var(--border-theme); }
+.app-theme .progress-track i { background: var(--accent-theme); }
+.app-theme .radar > span { background: var(--accent-theme); box-shadow: 0 0 10px rgba(255,216,77,.6); }
+
+@media (max-width: 620px) {
+  .theme-toggle { width: 40px; padding: 0; justify-content: center; font-size: 0; }
+  .theme-toggle span { font-size: 15px; }
+}
