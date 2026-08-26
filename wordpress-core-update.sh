@@ -34,7 +34,6 @@ MAINTENANCE_CREATED=0
 UPDATE_STARTED=0
 DRY_RUN=0
 ASSUME_YES=0
-ALLOW_DOWNGRADE=0
 
 ROOT_FILES=()
 ROOT_BACKUP_ITEMS=()
@@ -81,7 +80,6 @@ Options:
   --version VERSION   Phiên bản cần cài, hoặc "latest". Nếu bỏ qua sẽ hỏi.
   --backup-dir DIR    Nơi lưu backup core. Mặc định nằm ngoài web root.
   --dry-run           Tải và kiểm tra package, không thay đổi website.
-  --allow-downgrade   Cho phép cài phiên bản cũ hơn (rủi ro tương thích DB).
   -y, --yes           Không hỏi xác nhận trước khi cập nhật.
   -h, --help          Hiển thị hướng dẫn.
 
@@ -122,10 +120,6 @@ parse_options() {
         ;;
       --dry-run)
         DRY_RUN=1
-        shift
-        ;;
-      --allow-downgrade)
-        ALLOW_DOWNGRADE=1
         shift
         ;;
       -y|--yes)
@@ -256,7 +250,7 @@ choose_version() {
     || die "Phiên bản không hợp lệ: ${TARGET_VERSION}"
 }
 
-protect_against_downgrade() {
+warn_if_downgrade() {
   local oldest
 
   [[ "$CURRENT_VERSION" =~ ^[0-9]+\.[0-9]+([.][0-9]+)?$ ]] || return 0
@@ -264,8 +258,8 @@ protect_against_downgrade() {
   [[ "$CURRENT_VERSION" != "$TARGET_VERSION" ]] || return 0
 
   oldest="$(printf '%s\n%s\n' "$CURRENT_VERSION" "$TARGET_VERSION" | sort -V | awk 'NR == 1 { print; exit }')"
-  if [[ "$oldest" == "$TARGET_VERSION" ]] && (( ALLOW_DOWNGRADE == 0 )); then
-    die "${TARGET_VERSION} cũ hơn phiên bản hiện tại ${CURRENT_VERSION}. Nếu chỉ thay code core sạch, hãy chọn ${CURRENT_VERSION}; chỉ dùng --allow-downgrade khi đã đánh giá tương thích database."
+  if [[ "$oldest" == "$TARGET_VERSION" ]]; then
+    warn "Bạn đang downgrade WordPress từ ${CURRENT_VERSION} xuống ${TARGET_VERSION}. Hãy chắc chắn plugin/theme và database tương thích với phiên bản cũ."
   fi
 }
 
@@ -575,7 +569,7 @@ main() {
   make_temp_dir
   fetch_version_data
   choose_version
-  protect_against_downgrade
+  warn_if_downgrade
   select_download_url
   download_package
   extract_and_validate_package
