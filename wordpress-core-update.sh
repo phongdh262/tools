@@ -16,6 +16,7 @@ readonly SCRIPT_NAME="${0##*/}"
 readonly VERSION_API="https://api.wordpress.org/core/version-check/1.7/"
 readonly CHECKSUM_API="https://api.wordpress.org/core/checksums/1.0/"
 
+SELF_PATH=""
 WP_ROOT="."
 REQUESTED_VERSION=""
 BACKUP_BASE=""
@@ -34,6 +35,7 @@ MAINTENANCE_CREATED=0
 UPDATE_STARTED=0
 DRY_RUN=0
 ASSUME_YES=0
+KEEP_SCRIPT=0
 
 ROOT_FILES=()
 ROOT_BACKUP_ITEMS=()
@@ -80,6 +82,7 @@ Options:
   --version VERSION   Phiên bản cần cài, hoặc "latest". Nếu bỏ qua sẽ hỏi.
   --backup-dir DIR    Nơi lưu backup core. Mặc định nằm ngoài web root.
   --dry-run           Tải và kiểm tra package, không thay đổi website.
+  --keep-script       Không tự xóa script sau khi cập nhật thành công.
   -y, --yes           Không hỏi xác nhận trước khi cập nhật.
   -h, --help          Hiển thị hướng dẫn.
 
@@ -122,6 +125,10 @@ parse_options() {
         DRY_RUN=1
         shift
         ;;
+      --keep-script)
+        KEEP_SCRIPT=1
+        shift
+        ;;
       -y|--yes)
         ASSUME_YES=1
         shift
@@ -148,6 +155,17 @@ resolve_directory() {
   local directory="$1"
   [[ -d "$directory" ]] || die "Không tìm thấy thư mục: ${directory}"
   (cd -- "$directory" && pwd -P)
+}
+
+resolve_self_path() {
+  local source_path="${BASH_SOURCE[0]}"
+
+  if [[ "$source_path" != /* ]]; then
+    source_path="$(pwd -P)/${source_path}"
+  fi
+  if [[ -f "$source_path" || -L "$source_path" ]]; then
+    SELF_PATH="$(cd -- "$(dirname -- "$source_path")" && printf '%s/%s\n' "$(pwd -P)" "$(basename -- "$source_path")")"
+  fi
 }
 
 validate_wordpress_root() {
@@ -561,7 +579,22 @@ perform_update() {
   STAGE_DIR=""
 }
 
+delete_self_after_success() {
+  (( KEEP_SCRIPT == 0 )) || return 0
+
+  if [[ -n "$SELF_PATH" && ( -f "$SELF_PATH" || -L "$SELF_PATH" ) ]]; then
+    if rm -f -- "$SELF_PATH"; then
+      success "Đã tự xóa script sau khi cập nhật thành công: ${SELF_PATH}"
+    else
+      warn "Cập nhật đã thành công nhưng không thể tự xóa script: ${SELF_PATH}"
+    fi
+  else
+    warn "Cập nhật đã thành công nhưng không xác định được file script để tự xóa."
+  fi
+}
+
 main() {
+  resolve_self_path
   parse_options "$@"
   require_commands
   validate_wordpress_root
@@ -587,6 +620,7 @@ main() {
   info "wp-content, wp-config.php, .htaccess, database và file tùy chỉnh không bị thay đổi."
   info "Backup core cũ: ${BACKUP_ARCHIVE}"
   warn "Nếu WordPress yêu cầu nâng cấp database, hãy backup database trước khi thực hiện trong wp-admin."
+  delete_self_after_success
 }
 
 main "$@"
