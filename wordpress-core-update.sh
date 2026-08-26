@@ -19,7 +19,6 @@ readonly CHECKSUM_API="https://api.wordpress.org/core/checksums/1.0/"
 SELF_PATH=""
 WP_ROOT="."
 REQUESTED_VERSION=""
-BACKUP_BASE=""
 DOWNLOAD_URL=""
 TARGET_VERSION=""
 CURRENT_VERSION="unknown"
@@ -27,7 +26,6 @@ TEMP_DIR=""
 PACKAGE_ROOT=""
 STAGE_DIR=""
 OLD_CORE_DIR=""
-BACKUP_ARCHIVE=""
 MAINTENANCE_FILE=""
 LOCK_DIR=""
 LOCK_ACQUIRED=0
@@ -38,7 +36,7 @@ ASSUME_YES=0
 KEEP_SCRIPT=0
 
 ROOT_FILES=()
-ROOT_BACKUP_ITEMS=()
+ROLLBACK_ROOT_FILES=()
 CREATED_ROOT_FILES=()
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
@@ -80,7 +78,6 @@ Usage:
 Options:
   --path DIR          Thư mục gốc WordPress. Mặc định: thư mục hiện tại.
   --version VERSION   Phiên bản cần cài, hoặc "latest". Nếu bỏ qua sẽ hỏi.
-  --backup-dir DIR    Nơi lưu backup core. Mặc định nằm ngoài web root.
   --dry-run           Tải và kiểm tra package, không thay đổi website.
   --keep-script       Không tự xóa script sau khi cập nhật thành công.
   -y, --yes           Không hỏi xác nhận trước khi cập nhật.
@@ -98,7 +95,7 @@ require_command() {
 
 require_commands() {
   local command_name
-  for command_name in awk chmod chown cksum cp curl date dirname find install mkdir mktemp mv php rm rmdir sort stat tar unzip; do
+  for command_name in awk chmod chown cksum cp curl date dirname find install mkdir mktemp mv php rm rmdir sort stat unzip; do
     require_command "$command_name"
   done
 }
@@ -114,11 +111,6 @@ parse_options() {
       --version)
         (( $# >= 2 )) || die "--version cần một giá trị."
         REQUESTED_VERSION="$2"
-        shift 2
-        ;;
-      --backup-dir)
-        (( $# >= 2 )) || die "--backup-dir cần một thư mục."
-        BACKUP_BASE="$2"
         shift 2
         ;;
       --dry-run)
@@ -390,32 +382,19 @@ collect_root_files() {
   (( ${#ROOT_FILES[@]} > 0 )) || die "Không tìm thấy file core ở thư mục gốc package."
 }
 
-prepare_backup() {
-  local item timestamp site_name
+prepare_temporary_rollback_files() {
+  local item rollback_dir
+  rollback_dir="${OLD_CORE_DIR}/root-files"
+  install -d -m 700 "$rollback_dir"
 
-  if [[ -z "$BACKUP_BASE" ]]; then
-    BACKUP_BASE="$(dirname -- "$WP_ROOT")/.wordpress-core-backups"
-  fi
-
-  install -d -m 700 "$BACKUP_BASE"
-  BACKUP_BASE="$(resolve_directory "$BACKUP_BASE")"
-  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-  site_name="${WP_ROOT##*/}"
-  BACKUP_ARCHIVE="${BACKUP_BASE}/${site_name}-core-${CURRENT_VERSION}-${timestamp}.tar.gz"
-
-  ROOT_BACKUP_ITEMS=("wp-admin" "wp-includes")
   for item in "${ROOT_FILES[@]}"; do
     if [[ -e "${WP_ROOT}/${item}" || -L "${WP_ROOT}/${item}" ]]; then
-      ROOT_BACKUP_ITEMS+=("$item")
+      cp -a -- "${WP_ROOT}/${item}" "${rollback_dir}/${item}"
+      ROLLBACK_ROOT_FILES+=("$item")
     else
       CREATED_ROOT_FILES+=("$item")
     fi
   done
-
-  info "Đang backup WordPress core hiện tại..."
-  tar -czf "$BACKUP_ARCHIVE" -C "$WP_ROOT" -- "${ROOT_BACKUP_ITEMS[@]}"
-  chmod 600 "$BACKUP_ARCHIVE"
-  success "Đã tạo backup: ${BACKUP_ARCHIVE}"
 }
 
 normalize_new_core_permissions() {
@@ -494,14 +473,15 @@ rollback_update() {
     mv -- "${OLD_CORE_DIR}/wp-includes" "${WP_ROOT}/wp-includes"
   fi
 
-  if [[ -s "$BACKUP_ARCHIVE" ]] && (( ${#ROOT_BACKUP_ITEMS[@]} > 2 )); then
-    tar -xzf "$BACKUP_ARCHIVE" -C "$WP_ROOT" -- "${ROOT_BACKUP_ITEMS[@]:2}"
-  fi
+  for item in "${ROLLBACK_ROOT_FILES[@]}"; do
+    rm -f -- "${WP_ROOT}/${item}"
+    mv -- "${OLD_CORE_DIR}/root-files/${item}" "${WP_ROOT}/${item}"
+  done
   for item in "${CREATED_ROOT_FILES[@]}"; do
     rm -f -- "${WP_ROOT}/${item}"
   done
 
-  warn "Đã thử khôi phục core cũ. Backup vẫn còn tại: ${BACKUP_ARCHIVE}"
+  warn "Đã thử khôi phục core cũ từ dữ liệu rollback tạm."
 }
 
 safe_remove_work_dir() {
@@ -561,8 +541,8 @@ confirm_update() {
 }
 
 perform_update() {
-  prepare_backup
   stage_new_core
+  prepare_temporary_rollback_files
   create_maintenance_file
   UPDATE_STARTED=1
 
@@ -618,7 +598,6 @@ main() {
   perform_update
   success "Đã cập nhật WordPress core từ ${CURRENT_VERSION} lên ${TARGET_VERSION}."
   info "wp-content, wp-config.php, .htaccess, database và file tùy chỉnh không bị thay đổi."
-  info "Backup core cũ: ${BACKUP_ARCHIVE}"
   warn "Nếu WordPress yêu cầu nâng cấp database, hãy backup database trước khi thực hiện trong wp-admin."
   delete_self_after_success
 }
