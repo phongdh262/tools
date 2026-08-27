@@ -33,7 +33,6 @@ ADMIN_PASS=""
 MAIL_HOST="mail"
 TIMEZONE="Asia/Ho_Chi_Minh"
 CONFIGURE_FIREWALL="yes"
-ADMIN_SOURCE_CIDR=""
 SSH_PORT=""
 FIREWALL_STATUS="not configured"
 FIREWALL_ADMIN_ACCESS="not configured"
@@ -61,7 +60,6 @@ Optional overrides:
   ZIMBRA_ADMIN_PASSWORD     Environment variable password override
 
 Optional:
-  --admin-ip IPV4[/CIDR]    Restrict SSH and port 7071 to this source
   --skip-firewall           Do not configure or enable UFW
   --mail-host NAME          Hostname prefix (default: mail)
   --timezone ZONE           Timezone (default: Asia/Ho_Chi_Minh)
@@ -206,39 +204,6 @@ is_valid_ipv4() {
     for octet in "${octets[@]}"; do
         (( 10#$octet <= 255 )) || return 1
     done
-}
-
-is_valid_ipv4_cidr() {
-    local value="$1"
-    local ip="${value%%/*}"
-    local prefix=""
-
-    is_valid_ipv4 "$ip" || return 1
-
-    if [[ "$value" == */* ]]; then
-        prefix="${value##*/}"
-        [[ "$prefix" =~ ^[0-9]{1,2}$ ]] || return 1
-        (( 10#$prefix <= 32 )) || return 1
-    fi
-}
-
-detect_admin_source() {
-    local candidate=""
-
-    if [[ -n "$ADMIN_SOURCE_CIDR" ]]; then
-        printf '%s' "$ADMIN_SOURCE_CIDR"
-        return
-    fi
-
-    if [[ -n "${SSH_CONNECTION:-}" ]]; then
-        candidate="${SSH_CONNECTION%% *}"
-    elif [[ -n "${SSH_CLIENT:-}" ]]; then
-        candidate="${SSH_CLIENT%% *}"
-    fi
-
-    if is_valid_ipv4 "$candidate"; then
-        printf '%s' "$candidate"
-    fi
 }
 
 detect_ssh_port() {
@@ -460,7 +425,6 @@ synchronize_system_clock() {
 }
 
 configure_ufw() {
-    local admin_source
     local port
 
     log "Configure UFW firewall"
@@ -472,25 +436,16 @@ configure_ufw() {
     fi
 
     SSH_PORT=$(detect_ssh_port)
-    admin_source=$(detect_admin_source)
 
     echo "Existing UFW status:"
     ufw status verbose || true
     echo
 
     # Add access rules before enabling or changing the default incoming policy.
-    if [[ -n "$admin_source" ]]; then
-        ufw allow from "$admin_source" to any port "$SSH_PORT" proto tcp
-        ufw allow from "$admin_source" to any port 7071 proto tcp
-        FIREWALL_ADMIN_ACCESS="SSH(${SSH_PORT}/tcp) and 7071/tcp from $admin_source"
-        SSH_PORT="${SSH_PORT}/tcp from ${admin_source}"
-    else
-        echo "WARNING: Cannot detect the administrator IP; SSH and 7071 will be reachable publicly."
-        ufw limit "${SSH_PORT}/tcp"
-        ufw allow 7071/tcp
-        FIREWALL_ADMIN_ACCESS="7071/tcp from any IPv4/IPv6"
-        SSH_PORT="${SSH_PORT}/tcp rate-limited from any IPv4/IPv6"
-    fi
+    ufw allow "${SSH_PORT}/tcp"
+    ufw allow 7071/tcp
+    FIREWALL_ADMIN_ACCESS="7071/tcp from any IPv4/IPv6"
+    SSH_PORT="${SSH_PORT}/tcp from any IPv4/IPv6"
 
     for port in $UFW_PUBLIC_TCP_PORTS; do
         ufw allow "${port}/tcp"
@@ -581,12 +536,6 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
 
-        --admin-ip)
-            require_value "$1" "$#" "${2:-}"
-            ADMIN_SOURCE_CIDR="$2"
-            shift 2
-            ;;
-
         --skip-firewall)
             CONFIGURE_FIREWALL="no"
             shift
@@ -608,8 +557,6 @@ ADMIN_PASS="${ADMIN_PASS:-${ZIMBRA_ADMIN_PASSWORD:-}}"
 [[ -n "$DOMAIN" ]] || die "--domain required"
 is_valid_domain "$DOMAIN" || die "Invalid domain: $DOMAIN"
 [[ -z "$SERVER_IP" ]] || is_valid_ipv4 "$SERVER_IP" || die "Invalid IPv4: $SERVER_IP"
-[[ -z "$ADMIN_SOURCE_CIDR" ]] || is_valid_ipv4_cidr "$ADMIN_SOURCE_CIDR" || \
-    die "Invalid administrator IPv4/CIDR: $ADMIN_SOURCE_CIDR"
 [[ "$MAIL_HOST" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]] || \
     die "Invalid mail host: $MAIL_HOST"
 [[ "$TIMEZONE" =~ ^[a-zA-Z0-9_+-]+(/[a-zA-Z0-9_+-]+)+$ ]] || \
