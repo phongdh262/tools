@@ -239,6 +239,22 @@ check_zimbra_repository() {
     done
 }
 
+repair_zimbra_apt_keyring_permissions() {
+    local keyring="/etc/apt/trusted.gpg.d/zimbra.gpg"
+
+    [[ -f "$keyring" ]] || return 0
+
+    chown root:root /etc/apt /etc/apt/trusted.gpg.d "$keyring"
+    chmod 755 /etc/apt /etc/apt/trusted.gpg.d
+    chmod 644 "$keyring"
+
+    if ! su -s /bin/sh _apt -c "test -r '$keyring'"; then
+        echo "APT keyring path permissions:"
+        namei -l "$keyring" || true
+        die "User _apt still cannot read the Zimbra keyring"
+    fi
+}
+
 cleanup() {
     local exit_code=$?
 
@@ -423,12 +439,9 @@ log "Install OS dependencies"
 
 export DEBIAN_FRONTEND=noninteractive
 
-# The Zimbra installer inherits our umask when exporting this key. Repair the
-# mode left by older script versions before any APT command reads repositories.
-if [[ -f /etc/apt/trusted.gpg.d/zimbra.gpg ]]; then
-    chown root:root /etc/apt/trusted.gpg.d/zimbra.gpg
-    chmod 644 /etc/apt/trusted.gpg.d/zimbra.gpg
-fi
+# Older script versions could restrict both the key and its parent directory.
+# Verify readability as the same unprivileged user APT uses for downloads.
+repair_zimbra_apt_keyring_permissions
 
 # Repair interrupted package operations before installing dependencies.
 dpkg --configure -a
