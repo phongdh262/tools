@@ -10,9 +10,7 @@ umask 077
 #
 # Usage:
 # bash install-zimbra.sh \
-#   --domain example.com \
-#   --ip 103.110.85.145 \
-#   --password 'StrongPassword'
+#   --domain example.com
 # ============================================================
 
 readonly ZCS_VERSION="10.1.20"
@@ -39,16 +37,20 @@ WORKDIR=""
 usage() {
     cat <<EOF
 Usage:
-  sudo bash $0 --domain example.com --ip 203.0.113.10 [password option]
+  sudo bash $0 --domain example.com [options]
 
 Required:
   --domain DOMAIN           Mail domain (for example: example.com)
-  --ip IPV4                 Public IPv4 address of this server
-  --password PASSWORD       Zimbra admin password
 
-Password alternatives:
+Automatic defaults:
+  Public IPv4 is detected from the VPS when --ip is omitted.
+  A strong admin password is generated when no password option is set.
+
+Optional overrides:
+  --ip IPV4                 Override the detected public IPv4 address
+  --password PASSWORD       Override the generated Zimbra admin password
   --password-file FILE      Read the password from the first line of FILE
-  ZIMBRA_ADMIN_PASSWORD     Environment variable used when no password option is set
+  ZIMBRA_ADMIN_PASSWORD     Environment variable password override
 
 Optional:
   --mail-host NAME          Hostname prefix (default: mail)
@@ -90,6 +92,49 @@ is_valid_ipv4() {
     for octet in "${octets[@]}"; do
         (( 10#$octet <= 255 )) || return 1
     done
+}
+
+detect_server_ipv4() {
+    local candidate
+    local endpoint
+
+    for endpoint in \
+        "https://api.ipify.org" \
+        "https://ipv4.icanhazip.com" \
+        "https://checkip.amazonaws.com"; do
+        candidate=$(curl \
+            --ipv4 \
+            --fail \
+            --silent \
+            --connect-timeout 5 \
+            --max-time 10 \
+            "$endpoint" 2>/dev/null || true)
+        candidate=${candidate//[[:space:]]/}
+
+        if is_valid_ipv4 "$candidate" && [[ "$candidate" != 127.* ]]; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+
+    # Fallback for VPS providers that block public IP lookup services.
+    candidate=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '
+        {
+            for (i = 1; i <= NF; i++) {
+                if ($i == "src") {
+                    print $(i + 1)
+                    exit
+                }
+            }
+        }
+    ')
+
+    if is_valid_ipv4 "$candidate" && [[ "$candidate" != 127.* ]]; then
+        printf '%s' "$candidate"
+        return 0
+    fi
+
+    return 1
 }
 
 is_valid_domain() {
@@ -216,6 +261,7 @@ while [[ $# -gt 0 ]]; do
             require_value "$1" "$#" "${2:-}"
             [[ -r "$2" ]] || die "Cannot read password file: $2"
             IFS= read -r ADMIN_PASS < "$2" || true
+            [[ -n "$ADMIN_PASS" ]] || die "Password file is empty: $2"
             shift 2
             ;;
 
@@ -257,9 +303,8 @@ done
 ADMIN_PASS="${ADMIN_PASS:-${ZIMBRA_ADMIN_PASSWORD:-}}"
 
 [[ -n "$DOMAIN" ]] || die "--domain required"
-[[ -n "$SERVER_IP" ]] || die "--ip required"
-[[ -n "$ADMIN_PASS" ]] || die "Set --password, --password-file, or ZIMBRA_ADMIN_PASSWORD"
 is_valid_domain "$DOMAIN" || die "Invalid domain: $DOMAIN"
+[[ -z "$SERVER_IP" ]] || is_valid_ipv4 "$SERVER_IP" || die "Invalid IPv4: $SERVER_IP"
 [[ "$MAIL_HOST" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]] || \
     die "Invalid mail host: $MAIL_HOST"
 [[ "$TIMEZONE" =~ ^[a-zA-Z0-9_+-]+(/[a-zA-Z0-9_+-]+)+$ ]] || \
@@ -296,14 +341,6 @@ source /etc/os-release
 ARCH=$(uname -m)
 
 [[ "$ARCH" == "x86_64" ]] || die "x86_64 required"
-
-# ------------------------------------------------------------
-# IP validation
-# ------------------------------------------------------------
-
-if ! is_valid_ipv4 "$SERVER_IP"; then
-    die "Invalid IPv4: $SERVER_IP"
-fi
 
 # ------------------------------------------------------------
 # Check existing Zimbra
@@ -359,6 +396,7 @@ apt-get install -y \
     curl \
     dnsutils \
     dnsmasq \
+    iproute2 \
     net-tools \
     netcat-openbsd \
     openssl \
@@ -373,6 +411,21 @@ apt-get install -y \
 
 systemctl enable --now chrony
 systemctl enable --now rsyslog
+
+# Detect values only after curl and OpenSSL are guaranteed to be installed.
+if [[ -z "$SERVER_IP" ]]; then
+    log "Detect public IPv4"
+    SERVER_IP=$(detect_server_ipv4) || \
+        die "Cannot detect the VPS IPv4 address; rerun with --ip IPV4"
+    echo "Detected IPv4: $SERVER_IP"
+fi
+
+if [[ -z "$ADMIN_PASS" ]]; then
+    ADMIN_PASS=$(openssl rand -hex 16)
+fi
+
+[[ "$ADMIN_PASS" != *$'\n'* && "$ADMIN_PASS" != *$'\r'* ]] || \
+    die "Admin password must be a single line"
 
 # Download and validate the complete installer before changing host services.
 prepare_installer
@@ -857,6 +910,10 @@ chmod 600 "$RESULT_FILE"
 log "Installation completed"
 
 echo
+echo "Server IP:"
+echo "  $SERVER_IP"
+
+echo
 echo "Webmail:"
 echo "  https://$FQDN"
 
@@ -867,6 +924,10 @@ echo "  https://$FQDN:7071"
 echo
 echo "Login:"
 echo "  $ADMIN_EMAIL"
+
+echo
+echo "Password:"
+echo "  $ADMIN_PASS"
 
 echo
 echo "Deployment information:"
