@@ -36,6 +36,7 @@ CONFIGURE_FIREWALL="yes"
 SSH_PORT=""
 FIREWALL_STATUS="not configured"
 FIREWALL_ADMIN_ACCESS="not configured"
+SYSTEM_ACCOUNTS_CHANGED="no"
 
 LOG_FILE="/root/zimbra-auto-install.log"
 DOWNLOAD_DIR="/root/zimbra-downloads"
@@ -106,6 +107,11 @@ print_install_summary() {
     summary_section "ADMIN LOGIN"
     summary_field "Username" "$ADMIN_EMAIL"
     summary_field "Password" "$ADMIN_PASS"
+
+    summary_section "SYSTEM ACCOUNTS"
+    summary_field "Spam training" "$SPAM_ACCOUNT"
+    summary_field "Ham training" "$HAM_ACCOUNT"
+    summary_field "Virus quarantine" "$QUARANTINE_ACCOUNT"
 
     summary_section "DNS RECORDS - PUBLISH THESE"
     summary_field "A host" "$FQDN"
@@ -178,6 +184,117 @@ parse_dkim_query() {
         perl -0777 -ne 'my @parts = /"([^"]*)"/g; print join("", @parts);')
 
     [[ -n "$DKIM_SELECTOR" && "$DKIM_TXT_VALUE" == v=DKIM1\;* ]]
+}
+
+zimbra_account_exists() {
+    local account="$1"
+
+    su - zimbra -c \
+        "/opt/zimbra/bin/zmprov -l ga '$account' zimbraAccountStatus" \
+        >/dev/null 2>&1
+}
+
+zimbra_global_account_value() {
+    local attribute="$1"
+
+    su - zimbra -c \
+        "/opt/zimbra/bin/zmprov -l gacf '$attribute'" 2>/dev/null | \
+        awk -F ': ' -v attribute="$attribute" \
+            '$1 == attribute { print $2; exit }'
+}
+
+ensure_zimbra_system_account() {
+    local account="$1"
+    local password="$2"
+    local description="$3"
+    local lifetime="${4:-}"
+    local command
+
+    if zimbra_account_exists "$account"; then
+        echo "System account exists: $account"
+        return
+    fi
+
+    command="/opt/zimbra/bin/zmprov -l ca '$account' '$password'"
+    command+=" amavisBypassSpamChecks TRUE"
+    command+=" zimbraAttachmentsIndexingEnabled FALSE"
+    command+=" zimbraIsSystemAccount TRUE"
+    command+=" zimbraIsSystemResource TRUE"
+    command+=" zimbraHideInGal TRUE"
+    command+=" zimbraMailQuota 0"
+    [[ -z "$lifetime" ]] || \
+        command+=" zimbraMailMessageLifetime '$lifetime'"
+    command+=" description '$description'"
+
+    su - zimbra -c "$command" || \
+        die "Cannot create Zimbra system account: $account"
+
+    zimbra_account_exists "$account" || \
+        die "Zimbra system account verification failed: $account"
+
+    SYSTEM_ACCOUNTS_CHANGED="yes"
+    echo "Created system account: $account"
+}
+
+ensure_zimbra_system_accounts() {
+    local current_spam
+    local current_ham
+    local current_quarantine
+
+    log "Verify Zimbra system accounts"
+
+    su - zimbra -c \
+        "/opt/zimbra/bin/zmprov -l gd '$DOMAIN' zimbraDomainName" \
+        >/dev/null 2>&1 || die "Zimbra domain was not created: $DOMAIN"
+
+    zimbra_account_exists "$ADMIN_EMAIL" || \
+        die "Zimbra admin account was not created: $ADMIN_EMAIL"
+
+    ensure_zimbra_system_account \
+        "$SPAM_ACCOUNT" "$SPAM_ACCOUNT_PASS" \
+        "System account for spam training."
+    ensure_zimbra_system_account \
+        "$HAM_ACCOUNT" "$HAM_ACCOUNT_PASS" \
+        "System account for non-spam training."
+    ensure_zimbra_system_account \
+        "$QUARANTINE_ACCOUNT" "$QUARANTINE_ACCOUNT_PASS" \
+        "System account for antivirus quarantine." "30d"
+
+    current_spam=$(zimbra_global_account_value zimbraSpamIsSpamAccount || true)
+    current_ham=$(zimbra_global_account_value zimbraSpamIsNotSpamAccount || true)
+    current_quarantine=$(zimbra_global_account_value zimbraAmavisQuarantineAccount || true)
+
+    if [[ "$current_spam" != "$SPAM_ACCOUNT" || \
+          "$current_ham" != "$HAM_ACCOUNT" || \
+          "$current_quarantine" != "$QUARANTINE_ACCOUNT" ]]; then
+        su - zimbra -c \
+            "/opt/zimbra/bin/zmprov -l mcf \
+            zimbraSpamIsSpamAccount '$SPAM_ACCOUNT' \
+            zimbraSpamIsNotSpamAccount '$HAM_ACCOUNT' \
+            zimbraAmavisQuarantineAccount '$QUARANTINE_ACCOUNT'" || \
+            die "Cannot configure Zimbra spam and quarantine accounts"
+        SYSTEM_ACCOUNTS_CHANGED="yes"
+    fi
+
+    [[ "$(zimbra_global_account_value zimbraSpamIsSpamAccount)" == \
+        "$SPAM_ACCOUNT" ]] || die "Spam account configuration verification failed"
+    [[ "$(zimbra_global_account_value zimbraSpamIsNotSpamAccount)" == \
+        "$HAM_ACCOUNT" ]] || die "Ham account configuration verification failed"
+    [[ "$(zimbra_global_account_value zimbraAmavisQuarantineAccount)" == \
+        "$QUARANTINE_ACCOUNT" ]] || \
+        die "Quarantine account configuration verification failed"
+
+    if [[ "$SYSTEM_ACCOUNTS_CHANGED" == "yes" ]]; then
+        echo "System account configuration repaired; restarting Zimbra services"
+        su - zimbra -c 'zmcontrol restart' || \
+            die "Zimbra restart failed after system account repair"
+    else
+        echo "Spam, ham and quarantine accounts are configured correctly."
+    fi
+
+    echo "Spam training    : $SPAM_ACCOUNT"
+    echo "Ham training     : $HAM_ACCOUNT"
+    echo "Virus quarantine : $QUARANTINE_ACCOUNT"
 }
 
 die() {
@@ -1031,6 +1148,13 @@ LDAP_AMAVIS_PASS=$(openssl rand -hex 20)
 LDAP_POSTFIX_PASS=$(openssl rand -hex 20)
 LDAP_NGINX_PASS=$(openssl rand -hex 20)
 LDAP_REP_PASS=$(openssl rand -hex 20)
+SYSTEM_ACCOUNT_SUFFIX=$(openssl rand -hex 5)
+SPAM_ACCOUNT="spam.${SYSTEM_ACCOUNT_SUFFIX}@${DOMAIN}"
+HAM_ACCOUNT="ham.${SYSTEM_ACCOUNT_SUFFIX}@${DOMAIN}"
+QUARANTINE_ACCOUNT="virus-quarantine.${SYSTEM_ACCOUNT_SUFFIX}@${DOMAIN}"
+SPAM_ACCOUNT_PASS=$(openssl rand -hex 16)
+HAM_ACCOUNT_PASS=$(openssl rand -hex 16)
+QUARANTINE_ACCOUNT_PASS=$(openssl rand -hex 16)
 
 # ------------------------------------------------------------
 # Zimbra configuration
@@ -1119,6 +1243,10 @@ SPELLURL="http://${FQDN}:7780/aspell.php"
 
 STARTSERVERS="yes"
 
+TRAINSAHAM="$HAM_ACCOUNT"
+TRAINSASPAM="$SPAM_ACCOUNT"
+VIRUSQUARANTINE="$QUARANTINE_ACCOUNT"
+
 USESPELL="yes"
 
 ZIMBRA_REQ_SECURITY="yes"
@@ -1147,6 +1275,11 @@ chmod 600 "$CONFIG_FILE"
 log "Configure Zimbra"
 
 /opt/zimbra/libexec/zmsetup.pl -c "$CONFIG_FILE"
+
+# Some Zimbra builds fall back to HOSTNAME for these three accounts even when
+# AVDOMAIN is set. Verify them against the primary mail domain and repair the
+# configuration before reporting a successful installation.
+ensure_zimbra_system_accounts
 
 # ------------------------------------------------------------
 # Verification
