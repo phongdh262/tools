@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 
 set -Eeuo pipefail
-umask 077
+# System installers and APT keyrings need world-readable configuration files.
+# Files containing credentials are explicitly restricted to mode 600 below.
+umask 022
 
 # ============================================================
 # Zimbra 10.1.20 FOSS Automated Installer
@@ -420,6 +422,13 @@ fi
 log "Install OS dependencies"
 
 export DEBIAN_FRONTEND=noninteractive
+
+# The Zimbra installer inherits our umask when exporting this key. Repair the
+# mode left by older script versions before any APT command reads repositories.
+if [[ -f /etc/apt/trusted.gpg.d/zimbra.gpg ]]; then
+    chown root:root /etc/apt/trusted.gpg.d/zimbra.gpg
+    chmod 644 /etc/apt/trusted.gpg.d/zimbra.gpg
+fi
 
 # Repair interrupted package operations before installing dependencies.
 dpkg --configure -a
