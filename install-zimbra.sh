@@ -418,6 +418,37 @@ verify_installer() {
         die "SHA-256 verification failed or archive is corrupt: $archive"
 }
 
+patch_zimbra_installer() {
+    local utilfunc="$1/util/utilfunc.sh"
+    local unsafe_condition='if [ $P7ZIPREQUIRED = "yes" ]; then'
+    local safe_condition='if [ "${P7ZIPREQUIRED:-no}" = "yes" ]; then'
+    local unsafe_count
+
+    [[ -f "$utilfunc" ]] || \
+        die "Bundled Zimbra utility is missing: $utilfunc"
+
+    if grep -Fq "$safe_condition" "$utilfunc"; then
+        echo "Bundled installer P7ZIP condition is already safe."
+        return
+    fi
+
+    unsafe_count=$(grep -Fc "$unsafe_condition" "$utilfunc" || true)
+    [[ "$unsafe_count" == "1" ]] || \
+        die "Unexpected P7ZIP condition in bundled Zimbra installer"
+
+    sed -i.zimbra-auto-backup \
+        's/if \[ \$P7ZIPREQUIRED = "yes" \]; then/if [ "${P7ZIPREQUIRED:-no}" = "yes" ]; then/' \
+        "$utilfunc"
+    rm -f -- "${utilfunc}.zimbra-auto-backup"
+
+    grep -Fq "$safe_condition" "$utilfunc" || \
+        die "Cannot patch bundled Zimbra P7ZIP condition"
+    bash -n "$utilfunc" || \
+        die "Bundled Zimbra utility failed syntax validation after patching"
+
+    echo "Patched bundled installer: initialized empty P7ZIPREQUIRED as no."
+}
+
 prepare_installer() {
     local download_tmp
 
@@ -1092,6 +1123,9 @@ ZCS_DIR=$(
 [[ -n "$ZCS_DIR" ]] || die "Cannot locate extracted Zimbra installer"
 
 echo "Zimbra directory: $ZCS_DIR"
+
+log "Patch bundled Zimbra installer"
+patch_zimbra_installer "$ZCS_DIR"
 
 # ------------------------------------------------------------
 # Software-only installer configuration
