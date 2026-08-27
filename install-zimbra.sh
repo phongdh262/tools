@@ -36,6 +36,7 @@ CONFIGURE_FIREWALL="yes"
 SSH_PORT=""
 FIREWALL_STATUS="not configured"
 FIREWALL_ADMIN_ACCESS="not configured"
+UFW_RULES="not configured"
 SYSTEM_ACCOUNTS_CHANGED="no"
 
 LOG_FILE="/root/zimbra-auto-install.log"
@@ -97,60 +98,25 @@ print_install_summary() {
     printf '%s\n' '                    ZIMBRA INSTALLATION COMPLETED'
     summary_rule '='
 
-    summary_section "SERVER"
-    summary_field "Domain" "$DOMAIN"
-    summary_field "Hostname" "$FQDN"
-    summary_field "Public IPv4" "$SERVER_IP"
-    summary_field "Webmail" "https://$FQDN"
-    summary_field "Admin console" "https://$FQDN:7071"
-
     summary_section "ADMIN LOGIN"
+    summary_field "URL" "https://$FQDN:7071"
     summary_field "Username" "$ADMIN_EMAIL"
     summary_field "Password" "$ADMIN_PASS"
 
-    summary_section "SYSTEM ACCOUNTS"
-    summary_field "Spam training" "$SPAM_ACCOUNT"
-    summary_field "Ham training" "$HAM_ACCOUNT"
-    summary_field "Virus quarantine" "$QUARANTINE_ACCOUNT"
+    summary_section "DKIM DNS RECORD"
+    summary_field "Host / Name" "$DKIM_DNS_NAME"
+    summary_field "Type" "TXT"
+    summary_field "Value" "$DKIM_TXT_VALUE"
 
-    summary_section "DNS RECORDS - PUBLISH THESE"
-    summary_field "A host" "$FQDN"
-    summary_field "A value" "$SERVER_IP"
-    summary_field "MX host" "$DOMAIN"
-    summary_field "MX priority/value" "10 $FQDN"
-    summary_field "SPF host" "$DOMAIN"
-    summary_field "SPF TXT value" "v=spf1 mx a ip4:$SERVER_IP ~all"
-    summary_field "DMARC host" "_dmarc.$DOMAIN"
-    summary_field "DMARC TXT value" "v=DMARC1; p=none"
-    summary_field "DKIM host" "$DKIM_DNS_NAME"
-    summary_field "DKIM type" "TXT"
-    summary_field "DKIM TXT value" "$DKIM_TXT_VALUE"
-    summary_field "PTR / rDNS" "$SERVER_IP -> $FQDN"
+    summary_section "UFW ALLOWED PORTS"
+    printf '%s\n' "$UFW_RULES" | sed 's/^/  /'
 
-    summary_section "DKIM VERIFICATION"
-    summary_field "Selector" "$DKIM_SELECTOR"
-    summary_field "DNS check" "dig +short TXT $DKIM_DNS_NAME"
-
-    summary_section "FIREWALL"
-    summary_field "UFW status" "$FIREWALL_STATUS"
-    summary_field "Public TCP ports" "${UFW_PUBLIC_TCP_PORTS// /, }"
-    summary_field "SSH access" "${SSH_PORT:-not configured}"
-    summary_field "Admin access" "$FIREWALL_ADMIN_ACCESS"
-    summary_field "Cloud firewall" "Allow the same public ports at the VPS provider"
-
-    summary_section "FILES"
-    summary_field "Deployment info" "$RESULT_FILE"
-    summary_field "Installation log" "$LOG_FILE"
-
-    summary_section "ZIMBRA VERSION"
-    printf '%s\n' "$VERSION" | sed 's/^/  /'
-
-    summary_section "SERVICE STATUS"
+    summary_section "ZIMBRA SERVICE STATUS"
     printf '%s\n' "$STATUS" | sed 's/^/  /'
 
     echo
     summary_rule '='
-    printf '%s\n' 'Keep the deployment file secure: it contains the admin password.'
+    printf '%s\n' 'Keep this information secure: it contains the admin password.'
     summary_rule '='
 }
 
@@ -689,7 +655,8 @@ configure_ufw() {
 
     echo
     echo "Final UFW rules:"
-    ufw status numbered
+    UFW_RULES=$(ufw status numbered)
+    printf '%s\n' "$UFW_RULES"
 }
 
 cleanup() {
@@ -1377,6 +1344,7 @@ else
     SSH_PORT="$(detect_ssh_port)/tcp (unchanged)"
     FIREWALL_STATUS="skipped by --skip-firewall"
     FIREWALL_ADMIN_ACCESS="unchanged"
+    UFW_RULES="UFW configuration skipped by --skip-firewall"
     log "Skip UFW firewall configuration"
 fi
 
