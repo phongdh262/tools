@@ -352,6 +352,43 @@ repair_zimbra_apt_keyring_permissions() {
     fi
 }
 
+synchronize_system_clock() {
+    local attempt=1
+    local ntp_synchronized="no"
+
+    log "Synchronize system clock"
+
+    timedatectl set-ntp true 2>/dev/null || true
+
+    if command -v chronyc >/dev/null 2>&1; then
+        systemctl enable --now chrony 2>/dev/null || true
+        chronyc -a makestep 2>/dev/null || true
+    elif systemctl cat systemd-timesyncd.service >/dev/null 2>&1; then
+        systemctl enable --now systemd-timesyncd 2>/dev/null || true
+        systemctl restart systemd-timesyncd 2>/dev/null || true
+    fi
+
+    while (( attempt <= 30 )); do
+        ntp_synchronized=$(timedatectl show \
+            --property=NTPSynchronized \
+            --value 2>/dev/null || true)
+
+        if [[ "$ntp_synchronized" == "yes" ]]; then
+            break
+        fi
+
+        sleep 2
+        (( attempt++ ))
+    done
+
+    echo "UTC time         : $(date -u '+%F %T UTC')"
+    echo "NTP synchronized : $ntp_synchronized"
+
+    if [[ "$ntp_synchronized" != "yes" ]]; then
+        echo "WARNING: NTP has not confirmed synchronization; APT will perform the final clock validity check."
+    fi
+}
+
 cleanup() {
     local exit_code=$?
 
@@ -527,6 +564,10 @@ echo "Free disk: ${DISK_GB} GB"
 if [[ "$DISK_GB" -lt 20 ]]; then
     die "At least 20 GB free disk space is required. Current: ${DISK_GB} GB"
 fi
+
+# APT rejects signed Release files when the VPS clock is behind their
+# publication timestamp, so synchronize time before the first APT operation.
+synchronize_system_clock
 
 # ------------------------------------------------------------
 # Packages
