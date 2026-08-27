@@ -21,6 +21,7 @@ readonly ZCS_ARCHIVE="zcs-${ZCS_VERSION}_GA_${ZCS_BUILD}.tgz"
 readonly DEFAULT_ZCS_URL="https://github.com/phongdh262/tools/releases/download/zimbra-${ZCS_VERSION}/${ZCS_ARCHIVE}"
 readonly DEFAULT_ZCS_SHA256="57c16b71a59fc34d2e1675d122ad9c702d464000b5222b434296a93b850aed75"
 readonly ZCS_PACKAGES="zimbra-core zimbra-ldap zimbra-logger zimbra-mta zimbra-snmp zimbra-store zimbra-apache zimbra-spell zimbra-memcached zimbra-proxy"
+readonly UFW_PUBLIC_TCP_PORTS="25 80 443 465 587 993 995"
 
 ZCS_SOURCE="$DEFAULT_ZCS_URL"
 ZCS_SHA256="$DEFAULT_ZCS_SHA256"
@@ -31,6 +32,11 @@ SERVER_IP=""
 ADMIN_PASS=""
 MAIL_HOST="mail"
 TIMEZONE="Asia/Ho_Chi_Minh"
+CONFIGURE_FIREWALL="yes"
+ADMIN_SOURCE_CIDR=""
+SSH_PORT=""
+FIREWALL_STATUS="not configured"
+FIREWALL_ADMIN_ACCESS="not configured"
 
 LOG_FILE="/root/zimbra-auto-install.log"
 DOWNLOAD_DIR="/root/zimbra-downloads"
@@ -55,6 +61,8 @@ Optional overrides:
   ZIMBRA_ADMIN_PASSWORD     Environment variable password override
 
 Optional:
+  --admin-ip IPV4[/CIDR]    Restrict SSH and port 7071 to this source
+  --skip-firewall           Do not configure or enable UFW
   --mail-host NAME          Hostname prefix (default: mail)
   --timezone ZONE           Timezone (default: Asia/Ho_Chi_Minh)
   --installer PATH_OR_URL   Local archive or download URL
@@ -118,6 +126,13 @@ print_install_summary() {
     summary_section "DKIM VERIFICATION"
     summary_field "Selector" "$DKIM_SELECTOR"
     summary_field "DNS check" "dig +short TXT $DKIM_DNS_NAME"
+
+    summary_section "FIREWALL"
+    summary_field "UFW status" "$FIREWALL_STATUS"
+    summary_field "Public TCP ports" "${UFW_PUBLIC_TCP_PORTS// /, }"
+    summary_field "SSH access" "${SSH_PORT:-not configured}"
+    summary_field "Admin access" "$FIREWALL_ADMIN_ACCESS"
+    summary_field "Cloud firewall" "Allow the same public ports at the VPS provider"
 
     summary_section "FILES"
     summary_field "Deployment info" "$RESULT_FILE"
@@ -191,6 +206,55 @@ is_valid_ipv4() {
     for octet in "${octets[@]}"; do
         (( 10#$octet <= 255 )) || return 1
     done
+}
+
+is_valid_ipv4_cidr() {
+    local value="$1"
+    local ip="${value%%/*}"
+    local prefix=""
+
+    is_valid_ipv4 "$ip" || return 1
+
+    if [[ "$value" == */* ]]; then
+        prefix="${value##*/}"
+        [[ "$prefix" =~ ^[0-9]{1,2}$ ]] || return 1
+        (( 10#$prefix <= 32 )) || return 1
+    fi
+}
+
+detect_admin_source() {
+    local candidate=""
+
+    if [[ -n "$ADMIN_SOURCE_CIDR" ]]; then
+        printf '%s' "$ADMIN_SOURCE_CIDR"
+        return
+    fi
+
+    if [[ -n "${SSH_CONNECTION:-}" ]]; then
+        candidate="${SSH_CONNECTION%% *}"
+    elif [[ -n "${SSH_CLIENT:-}" ]]; then
+        candidate="${SSH_CLIENT%% *}"
+    fi
+
+    if is_valid_ipv4 "$candidate"; then
+        printf '%s' "$candidate"
+    fi
+}
+
+detect_ssh_port() {
+    local candidate=""
+
+    if [[ -n "${SSH_CONNECTION:-}" ]]; then
+        candidate=$(awk '{print $4}' <<< "$SSH_CONNECTION")
+    elif [[ -n "${SSH_CLIENT:-}" ]]; then
+        candidate=$(awk '{print $3}' <<< "$SSH_CLIENT")
+    elif command -v sshd >/dev/null 2>&1; then
+        candidate=$(sshd -T 2>/dev/null | awk '$1 == "port" {print $2; exit}')
+    fi
+
+    [[ "$candidate" =~ ^[0-9]{1,5}$ ]] || candidate="22"
+    (( 10#$candidate >= 1 && 10#$candidate <= 65535 )) || candidate="22"
+    printf '%s' "$candidate"
 }
 
 detect_server_ipv4() {
@@ -395,6 +459,57 @@ synchronize_system_clock() {
     fi
 }
 
+configure_ufw() {
+    local admin_source
+    local port
+
+    log "Configure UFW firewall"
+
+    command -v ufw >/dev/null 2>&1 || die "UFW is not installed"
+
+    if systemctl is-active --quiet firewalld 2>/dev/null; then
+        die "firewalld is active; disable it before configuring UFW"
+    fi
+
+    SSH_PORT=$(detect_ssh_port)
+    admin_source=$(detect_admin_source)
+
+    echo "Existing UFW status:"
+    ufw status verbose || true
+    echo
+
+    # Add access rules before enabling or changing the default incoming policy.
+    if [[ -n "$admin_source" ]]; then
+        ufw allow from "$admin_source" to any port "$SSH_PORT" proto tcp
+        ufw allow from "$admin_source" to any port 7071 proto tcp
+        FIREWALL_ADMIN_ACCESS="SSH(${SSH_PORT}/tcp) and 7071/tcp from $admin_source"
+        SSH_PORT="${SSH_PORT}/tcp from ${admin_source}"
+    else
+        echo "WARNING: Cannot detect the administrator IP; SSH and 7071 will be reachable publicly."
+        ufw limit "${SSH_PORT}/tcp"
+        ufw allow 7071/tcp
+        FIREWALL_ADMIN_ACCESS="7071/tcp from any IPv4/IPv6"
+        SSH_PORT="${SSH_PORT}/tcp rate-limited from any IPv4/IPv6"
+    fi
+
+    for port in $UFW_PUBLIC_TCP_PORTS; do
+        ufw allow "${port}/tcp"
+    done
+
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw logging low
+    ufw --force enable
+    systemctl enable --now ufw
+
+    FIREWALL_STATUS=$(ufw status | awk 'NR == 1 {print tolower($2)}')
+    [[ "$FIREWALL_STATUS" == "active" ]] || die "UFW did not become active"
+
+    echo
+    echo "Final UFW rules:"
+    ufw status numbered
+}
+
 cleanup() {
     local exit_code=$?
 
@@ -466,6 +581,17 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
 
+        --admin-ip)
+            require_value "$1" "$#" "${2:-}"
+            ADMIN_SOURCE_CIDR="$2"
+            shift 2
+            ;;
+
+        --skip-firewall)
+            CONFIGURE_FIREWALL="no"
+            shift
+            ;;
+
         -h|--help)
             usage
             exit 0
@@ -482,6 +608,8 @@ ADMIN_PASS="${ADMIN_PASS:-${ZIMBRA_ADMIN_PASSWORD:-}}"
 [[ -n "$DOMAIN" ]] || die "--domain required"
 is_valid_domain "$DOMAIN" || die "Invalid domain: $DOMAIN"
 [[ -z "$SERVER_IP" ]] || is_valid_ipv4 "$SERVER_IP" || die "Invalid IPv4: $SERVER_IP"
+[[ -z "$ADMIN_SOURCE_CIDR" ]] || is_valid_ipv4_cidr "$ADMIN_SOURCE_CIDR" || \
+    die "Invalid administrator IPv4/CIDR: $ADMIN_SOURCE_CIDR"
 [[ "$MAIL_HOST" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]] || \
     die "Invalid mail host: $MAIL_HOST"
 [[ "$TIMEZONE" =~ ^[a-zA-Z0-9_+-]+(/[a-zA-Z0-9_+-]+)+$ ]] || \
@@ -612,6 +740,7 @@ apt-get install -y \
     sqlite3 \
     sysstat \
     tar \
+    ufw \
     unzip
 
 systemctl enable --now chrony
@@ -1043,6 +1172,19 @@ unset DKIM_QUERY
 echo "DKIM selector : $DKIM_SELECTOR"
 echo "DKIM DNS host : $DKIM_DNS_NAME"
 echo "DKIM TXT data : prepared for the installation summary"
+
+# ------------------------------------------------------------
+# Host firewall
+# ------------------------------------------------------------
+
+if [[ "$CONFIGURE_FIREWALL" == "yes" ]]; then
+    configure_ufw
+else
+    SSH_PORT="$(detect_ssh_port)/tcp (unchanged)"
+    FIREWALL_STATUS="skipped by --skip-firewall"
+    FIREWALL_ADMIN_ACCESS="unchanged"
+    log "Skip UFW firewall configuration"
+fi
 
 # ------------------------------------------------------------
 # Save credentials / deployment info
