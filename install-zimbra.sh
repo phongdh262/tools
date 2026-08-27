@@ -381,9 +381,67 @@ repair_zimbra_apt_keyring_permissions() {
     fi
 }
 
+fetch_reference_epoch() {
+    local date_header
+    local endpoint
+    local epoch
+    local -a epochs=()
+
+    for endpoint in \
+        "https://archive.ubuntu.com/ubuntu/dists/jammy-security/InRelease" \
+        "https://repo.zimbra.com/apt/1010/dists/jammy/Release" \
+        "https://api.github.com"; do
+        date_header=""
+
+        if command -v curl >/dev/null 2>&1; then
+            date_header=$(curl \
+                --head \
+                --location \
+                --fail \
+                --silent \
+                --show-error \
+                --connect-timeout 5 \
+                --max-time 15 \
+                "$endpoint" 2>/dev/null | \
+                tr -d '\r' | \
+                awk 'tolower($1) == "date:" {
+                    $1 = ""
+                    sub(/^ /, "")
+                    value = $0
+                } END {print value}')
+        elif command -v wget >/dev/null 2>&1; then
+            date_header=$(wget \
+                --server-response \
+                --spider \
+                --timeout=15 \
+                "$endpoint" 2>&1 | \
+                tr -d '\r' | \
+                awk 'tolower($1) == "date:" {
+                    $1 = ""
+                    sub(/^ /, "")
+                    value = $0
+                } END {print value}')
+        fi
+
+        if [[ -n "$date_header" ]]; then
+            epoch=$(date -u --date="$date_header" +%s 2>/dev/null || true)
+            [[ "$epoch" =~ ^[0-9]{10,}$ ]] && epochs+=("$epoch")
+        fi
+    done
+
+    (( ${#epochs[@]} > 0 )) || return 1
+
+    printf '%s\n' "${epochs[@]}" | sort -n | \
+        awk '{values[NR] = $1} END {print values[int((NR + 1) / 2)]}'
+}
+
 synchronize_system_clock() {
     local attempt=1
+    local clock_offset=0
+    local clock_source="NTP"
+    local local_epoch
     local ntp_synchronized="no"
+    local reference_epoch=""
 
     [[ -f "/usr/share/zoneinfo/$TIMEZONE" ]] || die "Unknown timezone: $TIMEZONE"
     timedatectl set-timezone "$TIMEZONE"
@@ -414,10 +472,31 @@ synchronize_system_clock() {
         (( attempt++ ))
     done
 
+    reference_epoch=$(fetch_reference_epoch || true)
+
+    if [[ "$reference_epoch" =~ ^[0-9]{10,}$ ]]; then
+        local_epoch=$(date -u +%s)
+        clock_offset=$(( reference_epoch - local_epoch ))
+
+        if (( clock_offset < -60 || clock_offset > 60 )); then
+            echo "WARNING: NTP clock differs from trusted HTTPS time by ${clock_offset} seconds."
+            timedatectl set-ntp false 2>/dev/null || true
+            date --utc --set="@${reference_epoch}" >/dev/null || \
+                die "Cannot correct the VPS clock; ask the VPS provider to fix host time"
+            hwclock --systohc --utc 2>/dev/null || true
+            clock_source="HTTPS median correction"
+            ntp_synchronized="temporarily disabled until Chrony starts"
+        fi
+    else
+        clock_source="NTP (HTTPS validation unavailable)"
+    fi
+
     echo "Timezone         : $TIMEZONE ($(date '+%:z'))"
     echo "Local time       : $(date '+%F %T %Z')"
     echo "UTC time         : $(date -u '+%F %T UTC')"
     echo "NTP synchronized : $ntp_synchronized"
+    echo "Clock source     : $clock_source"
+    echo "HTTPS offset     : ${clock_offset} seconds"
 
     if [[ "$ntp_synchronized" != "yes" ]]; then
         echo "WARNING: NTP has not confirmed synchronization; APT will perform the final clock validity check."
@@ -691,6 +770,7 @@ apt-get install -y \
     unzip
 
 systemctl enable --now chrony
+chronyc -a makestep 2>/dev/null || true
 systemctl enable --now rsyslog
 
 # Detect values only after curl and OpenSSL are guaranteed to be installed.
