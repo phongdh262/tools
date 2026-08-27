@@ -70,6 +70,103 @@ log() {
     echo "============================================================"
 }
 
+summary_rule() {
+    local character="${1:-=}"
+
+    printf '%78s\n' '' | tr ' ' "$character"
+}
+
+summary_section() {
+    echo
+    printf '[ %s ]\n' "$1"
+}
+
+summary_field() {
+    printf '  %-20s : %s\n' "$1" "$2"
+}
+
+print_install_summary() {
+    summary_rule '='
+    printf '%s\n' '                    ZIMBRA INSTALLATION COMPLETED'
+    summary_rule '='
+
+    summary_section "SERVER"
+    summary_field "Domain" "$DOMAIN"
+    summary_field "Hostname" "$FQDN"
+    summary_field "Public IPv4" "$SERVER_IP"
+    summary_field "Webmail" "https://$FQDN"
+    summary_field "Admin console" "https://$FQDN:7071"
+
+    summary_section "ADMIN LOGIN"
+    summary_field "Username" "$ADMIN_EMAIL"
+    summary_field "Password" "$ADMIN_PASS"
+
+    summary_section "DNS RECORDS - PUBLISH THESE"
+    summary_field "A host" "$FQDN"
+    summary_field "A value" "$SERVER_IP"
+    summary_field "MX host" "$DOMAIN"
+    summary_field "MX priority/value" "10 $FQDN"
+    summary_field "SPF host" "$DOMAIN"
+    summary_field "SPF TXT value" "v=spf1 mx a ip4:$SERVER_IP ~all"
+    summary_field "DMARC host" "_dmarc.$DOMAIN"
+    summary_field "DMARC TXT value" "v=DMARC1; p=none"
+    summary_field "DKIM host" "$DKIM_DNS_NAME"
+    summary_field "DKIM type" "TXT"
+    summary_field "DKIM TXT value" "$DKIM_TXT_VALUE"
+    summary_field "PTR / rDNS" "$SERVER_IP -> $FQDN"
+
+    summary_section "DKIM VERIFICATION"
+    summary_field "Selector" "$DKIM_SELECTOR"
+    summary_field "DNS check" "dig +short TXT $DKIM_DNS_NAME"
+
+    summary_section "FILES"
+    summary_field "Deployment info" "$RESULT_FILE"
+    summary_field "Installation log" "$LOG_FILE"
+
+    summary_section "ZIMBRA VERSION"
+    printf '%s\n' "$VERSION" | sed 's/^/  /'
+
+    summary_section "SERVICE STATUS"
+    printf '%s\n' "$STATUS" | sed 's/^/  /'
+
+    echo
+    summary_rule '='
+    printf '%s\n' 'Keep the deployment file secure: it contains the admin password.'
+    summary_rule '='
+}
+
+parse_dkim_query() {
+    local query_output="$1"
+    local public_signature
+
+    DKIM_SELECTOR=$(awk '
+        /^DKIM Selector:$/ {
+            getline
+            print
+            exit
+        }
+    ' <<< "$query_output")
+
+    public_signature=$(awk '
+        /^DKIM Public signature:$/ {
+            capture = 1
+            next
+        }
+        /^DKIM Identity:$/ {
+            capture = 0
+        }
+        capture {
+            print
+        }
+    ' <<< "$query_output")
+
+    # Join the quoted DNS chunks into the single value expected by DNS UIs.
+    DKIM_TXT_VALUE=$(printf '%s\n' "$public_signature" | \
+        perl -0777 -ne 'my @parts = /"([^"]*)"/g; print join("", @parts);')
+
+    [[ -n "$DKIM_SELECTOR" && "$DKIM_TXT_VALUE" == v=DKIM1\;* ]]
+}
+
 die() {
     echo "ERROR: $*" >&2
     exit 1
@@ -886,21 +983,28 @@ fi
 
 log "DKIM"
 
-DKIM=$(
-    su - zimbra -c \
-      "/opt/zimbra/libexec/zmdkimkeyutil -q -d '$DOMAIN'" \
-      2>/dev/null || true
-)
+if ! DKIM_QUERY=$(su - zimbra -c \
+    "/opt/zimbra/libexec/zmdkimkeyutil -q -d '$DOMAIN'" 2>/dev/null); then
+    if ! DKIM_ADD_OUTPUT=$(su - zimbra -c \
+        "/opt/zimbra/libexec/zmdkimkeyutil -a -d '$DOMAIN'" 2>&1); then
+        echo "$DKIM_ADD_OUTPUT"
+        die "Cannot generate DKIM data for $DOMAIN"
+    fi
+    echo "$DKIM_ADD_OUTPUT"
 
-if [[ -z "$DKIM" ]]; then
-    DKIM=$(
-        su - zimbra -c \
-          "/opt/zimbra/libexec/zmdkimkeyutil -a -d '$DOMAIN'" \
-          2>&1 || true
-    )
+    DKIM_QUERY=$(su - zimbra -c \
+        "/opt/zimbra/libexec/zmdkimkeyutil -q -d '$DOMAIN'" 2>&1) || \
+        die "Cannot retrieve generated DKIM data for $DOMAIN"
 fi
 
-echo "$DKIM"
+parse_dkim_query "$DKIM_QUERY" || die "Cannot parse DKIM DNS data"
+
+DKIM_DNS_NAME="${DKIM_SELECTOR}._domainkey.${DOMAIN}"
+unset DKIM_QUERY
+
+echo "DKIM selector : $DKIM_SELECTOR"
+echo "DKIM DNS host : $DKIM_DNS_NAME"
+echo "DKIM TXT data : prepared for the installation summary"
 
 # ------------------------------------------------------------
 # Save credentials / deployment info
@@ -908,109 +1012,8 @@ echo "$DKIM"
 
 RESULT_FILE="/root/ZIMBRA-INSTALL-INFO.txt"
 
-cat > "$RESULT_FILE" <<EOF
-============================================================
-ZIMBRA INSTALLATION
-============================================================
-
-Domain:
-$DOMAIN
-
-Hostname:
-$FQDN
-
-IP:
-$SERVER_IP
-
-Admin:
-$ADMIN_EMAIL
-
-Admin password:
-$ADMIN_PASS
-
-Webmail:
-https://$FQDN
-
-Admin console:
-https://$FQDN:7071
-
-
-============================================================
-DNS RECORDS
-============================================================
-
-A:
-
-$FQDN
-$SERVER_IP
-
-
-MX:
-
-$DOMAIN
-10 $FQDN
-
-
-SPF:
-
-v=spf1 mx a ip4:$SERVER_IP ~all
-
-
-DMARC:
-
-Host:
-_dmarc.$DOMAIN
-
-Value:
-v=DMARC1; p=none
-
-
-PTR:
-
-$SERVER_IP -> $FQDN
-
-
-============================================================
-DKIM
-============================================================
-
-$DKIM
-
-============================================================
-EOF
-
-chmod 600 "$RESULT_FILE"
+install -m 600 /dev/null "$RESULT_FILE"
+print_install_summary > "$RESULT_FILE"
 
 log "Installation completed"
-
-echo
-echo "Server IP:"
-echo "  $SERVER_IP"
-
-echo
-echo "Webmail:"
-echo "  https://$FQDN"
-
-echo
-echo "Admin:"
-echo "  https://$FQDN:7071"
-
-echo
-echo "Login:"
-echo "  $ADMIN_EMAIL"
-
-echo
-echo "Password:"
-echo "  $ADMIN_PASS"
-
-echo
-echo "Deployment information:"
-echo "  $RESULT_FILE"
-
-echo
-echo "Version:"
-su - zimbra -c 'zmcontrol -v'
-
-echo
-echo "Services:"
-su - zimbra -c 'zmcontrol status'
+print_install_summary
