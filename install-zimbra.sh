@@ -356,7 +356,11 @@ synchronize_system_clock() {
     local attempt=1
     local ntp_synchronized="no"
 
-    log "Synchronize system clock"
+    [[ -f "/usr/share/zoneinfo/$TIMEZONE" ]] || die "Unknown timezone: $TIMEZONE"
+    timedatectl set-timezone "$TIMEZONE"
+    timedatectl set-local-rtc 0 2>/dev/null || true
+
+    log "Configure timezone and synchronize system clock"
 
     timedatectl set-ntp true 2>/dev/null || true
 
@@ -381,6 +385,8 @@ synchronize_system_clock() {
         (( attempt++ ))
     done
 
+    echo "Timezone         : $TIMEZONE ($(date '+%:z'))"
+    echo "Local time       : $(date '+%F %T %Z')"
     echo "UTC time         : $(date -u '+%F %T UTC')"
     echo "NTP synchronized : $ntp_synchronized"
 
@@ -513,6 +519,10 @@ ARCH=$(uname -m)
 
 [[ "$ARCH" == "x86_64" ]] || die "x86_64 required"
 
+# Set Asia/Ho_Chi_Minh (UTC+07:00 by default) and synchronize the actual clock
+# before timestamps are logged or signed APT metadata is validated.
+synchronize_system_clock
+
 # ------------------------------------------------------------
 # Check existing Zimbra
 # ------------------------------------------------------------
@@ -564,10 +574,6 @@ echo "Free disk: ${DISK_GB} GB"
 if [[ "$DISK_GB" -lt 20 ]]; then
     die "At least 20 GB free disk space is required. Current: ${DISK_GB} GB"
 fi
-
-# APT rejects signed Release files when the VPS clock is behind their
-# publication timestamp, so synchronize time before the first APT operation.
-synchronize_system_clock
 
 # ------------------------------------------------------------
 # Packages
@@ -681,15 +687,6 @@ echo "hostname -f:"
 hostname -f
 
 [[ "$(hostname -f)" == "$FQDN" ]] || die "hostname -f is incorrect"
-
-# ------------------------------------------------------------
-# Timezone
-# ------------------------------------------------------------
-
-log "Configure timezone"
-
-[[ -f "/usr/share/zoneinfo/$TIMEZONE" ]] || die "Unknown timezone: $TIMEZONE"
-timedatectl set-timezone "$TIMEZONE"
 
 # ------------------------------------------------------------
 # resolv.conf
