@@ -218,6 +218,25 @@ prepare_installer() {
     fi
 }
 
+check_zimbra_repository() {
+    local repository_path
+    local repository_url
+
+    for repository_path in 87 1000 1010; do
+        repository_url="https://repo.zimbra.com/apt/${repository_path}/dists/jammy/Release"
+        curl \
+            --fail \
+            --location \
+            --silent \
+            --show-error \
+            --connect-timeout 10 \
+            --max-time 30 \
+            --output /dev/null \
+            "$repository_url" || \
+            die "Cannot access the Zimbra APT repository: $repository_url"
+    done
+}
+
 cleanup() {
     local exit_code=$?
 
@@ -348,6 +367,23 @@ ARCH=$(uname -m)
 
 if [[ -d /opt/zimbra ]]; then
 
+    ZIMBRA_CORE_STATUS=$(dpkg-query -W -f='${db:Status-Status}' zimbra-core 2>/dev/null || true)
+
+    # A failed pre-package installer run leaves only this empty directory.
+    # Remove that known-safe residue so the corrected script can be rerun.
+    if [[ "$ZIMBRA_CORE_STATUS" != "installed" ]] && ! id zimbra &>/dev/null; then
+        if [[ -d /opt/zimbra/.saveconfig ]]; then
+            rmdir /opt/zimbra/.saveconfig 2>/dev/null || \
+                die "Incomplete /opt/zimbra contains data; inspect it before retrying"
+        fi
+        rmdir /opt/zimbra 2>/dev/null || \
+            die "Incomplete /opt/zimbra contains data; inspect it before retrying"
+        log "Removed empty directory left by an incomplete Zimbra installer run"
+    fi
+fi
+
+if [[ -d /opt/zimbra ]]; then
+
     if id zimbra &>/dev/null; then
         echo
         echo "Existing Zimbra detected:"
@@ -391,11 +427,14 @@ apt-get -f install -y
 apt-get update
 
 apt-get install -y \
+    apt-transport-https \
     ca-certificates \
     chrony \
     curl \
+    dirmngr \
     dnsutils \
     dnsmasq \
+    gnupg \
     iproute2 \
     net-tools \
     netcat-openbsd \
@@ -426,6 +465,10 @@ fi
 
 [[ "$ADMIN_PASS" != *$'\n'* && "$ADMIN_PASS" != *$'\r'* ]] || \
     die "Admin password must be a single line"
+
+# Fail early with a clear URL if the external packages required by proxy are
+# not reachable. The bundled installer otherwise hides this detail in a log.
+check_zimbra_repository
 
 # Download and validate the complete installer before changing host services.
 prepare_installer
@@ -647,7 +690,16 @@ log "Install Zimbra software"
 
 cd "$ZCS_DIR"
 
-./install.sh -s "$SOFTWARE_CONFIG_FILE"
+if ! ./install.sh -s "$SOFTWARE_CONFIG_FILE"; then
+    echo
+    echo "Zimbra installer diagnostics (last 120 log lines):"
+    if [[ -r /tmp/install.log ]]; then
+        tail -n 120 /tmp/install.log
+    else
+        echo "Installer log is unavailable: /tmp/install.log"
+    fi
+    die "Zimbra software installation failed"
+fi
 
 # ------------------------------------------------------------
 # Check software install
