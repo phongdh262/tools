@@ -171,6 +171,117 @@ stage_inputs() {
   install -m 600 "$key_path" "${TEMP_DIR}/commercial.key"
 }
 
+try_fix_chain() {
+  local cert="${TEMP_DIR}/commercial.crt"
+  local chain="${TEMP_DIR}/commercial_ca.crt"
+  local max_depth=5
+  local depth=0
+  local fixed_any=0
+
+  while (( depth < max_depth )); do
+    # Nếu chain đã hợp lệ thì dừng
+    if openssl verify -purpose sslserver -CAfile "$chain" "$cert" >/dev/null 2>&1; then
+      if (( fixed_any )); then
+        info "Đã tự động bổ sung CA thiếu vào chain. Xác minh thành công."
+      fi
+      return 0
+    fi
+
+    # Lấy certificate cuối cùng trong chain
+    awk '
+      /-----BEGIN CERTIFICATE-----/ { cert = "" }
+      { cert = cert $0 "\n" }
+      /-----END CERTIFICATE-----/ { last = cert }
+      END { printf "%s", last }
+    ' "$chain" > "${TEMP_DIR}/last_in_chain.pem"
+
+    local issuer_hash subject_hash
+    issuer_hash=$(openssl x509 -in "${TEMP_DIR}/last_in_chain.pem" -noout -issuer_hash 2>/dev/null || true)
+    subject_hash=$(openssl x509 -in "${TEMP_DIR}/last_in_chain.pem" -noout -subject_hash 2>/dev/null || true)
+
+    # Nếu đã là self-signed (root) thì không thể đi thêm
+    if [[ "$issuer_hash" == "$subject_hash" ]]; then
+      break
+    fi
+
+    local found=0
+
+    # === Phương pháp 1: Tải CA thiếu qua AIA (Authority Information Access) ===
+    local aia_url
+    aia_url=$(
+      openssl x509 -in "${TEMP_DIR}/last_in_chain.pem" -noout -text 2>/dev/null \
+        | sed -n '/CA Issuers/s/.*URI:\(http[^ ]*\).*/\1/p' | head -1
+    )
+
+    if [[ -n "$aia_url" ]] && command -v curl >/dev/null 2>&1; then
+      info "Đang tải CA thiếu từ AIA: ${aia_url}"
+      if curl -fsSL --max-time 30 -o "${TEMP_DIR}/aia_ca.tmp" "$aia_url" 2>/dev/null; then
+        # Thử DER trước, rồi PEM
+        if openssl x509 -inform DER -in "${TEMP_DIR}/aia_ca.tmp" -outform PEM \
+             >> "$chain" 2>/dev/null; then
+          found=1
+        elif openssl x509 -in "${TEMP_DIR}/aia_ca.tmp" -outform PEM \
+               >> "$chain" 2>/dev/null; then
+          found=1
+        fi
+      fi
+    fi
+
+    # === Phương pháp 2: Tìm trong system CA store bằng issuer hash ===
+    if (( !found )); then
+      local sys_cert_dir="/etc/ssl/certs"
+      if [[ -d "$sys_cert_dir" ]]; then
+        local hash_link="${sys_cert_dir}/${issuer_hash}.0"
+        if [[ -f "$hash_link" ]]; then
+          info "Tìm thấy CA thiếu trong system store: ${hash_link}"
+          if openssl x509 -in "$hash_link" -outform PEM >> "$chain" 2>/dev/null; then
+            found=1
+          fi
+        fi
+      fi
+    fi
+
+    # === Phương pháp 3: Tìm bằng tên CN (SecureTrust_CA, v.v.) ===
+    if (( !found )); then
+      local issuer_cn
+      issuer_cn=$(
+        openssl x509 -in "${TEMP_DIR}/last_in_chain.pem" -noout -issuer 2>/dev/null \
+          | sed -n 's/.*CN *= *\([^,\/]*\).*/\1/p'
+      )
+
+      if [[ -n "$issuer_cn" ]]; then
+        # Chuẩn hóa tên để tìm file: "SecureTrust CA" -> "SecureTrust_CA"
+        local search_name
+        search_name=$(printf '%s' "$issuer_cn" | tr ' ' '_' | sed 's/[^a-zA-Z0-9_.-]//g')
+
+        local sys_cert
+        for sys_cert in \
+          "/etc/ssl/certs/${search_name}.pem" \
+          "/usr/share/ca-certificates/mozilla/${search_name}.crt" \
+          "/etc/pki/tls/certs/${search_name}.pem" \
+          "/usr/local/share/ca-certificates/${search_name}.crt"; do
+          if [[ -f "$sys_cert" ]]; then
+            info "Tìm thấy CA thiếu: ${sys_cert}"
+            if openssl x509 -in "$sys_cert" -outform PEM >> "$chain" 2>/dev/null; then
+              found=1
+              break
+            fi
+          fi
+        done
+      fi
+    fi
+
+    if (( !found )); then
+      break
+    fi
+
+    fixed_any=1
+    (( depth++ ))
+  done
+
+  return 1
+}
+
 validate_inputs() {
   local cert="${TEMP_DIR}/commercial.crt"
   local chain="${TEMP_DIR}/commercial_ca.crt"
@@ -204,8 +315,12 @@ validate_inputs() {
   cmp -s "${TEMP_DIR}/cert-public.der" "${TEMP_DIR}/key-public.der" \
     || die "Private key KHÔNG khớp với server certificate."
 
-  openssl verify -purpose sslserver -CAfile "$chain" "$cert" >/dev/null \
-    || die "Không xác minh được server certificate bằng CA bundle. Kiểm tra lại chain và thứ tự intermediate -> root."
+  if ! openssl verify -purpose sslserver -CAfile "$chain" "$cert" >/dev/null 2>&1; then
+    warn "Xác minh chain thất bại. Đang thử tự động bổ sung CA thiếu..."
+    if ! try_fix_chain; then
+      die "Không xác minh được server certificate bằng CA bundle. Kiểm tra lại chain và thứ tự intermediate -> root."
+    fi
+  fi
 }
 
 show_certificate_summary() {
