@@ -260,6 +260,7 @@ verify_firewall_rules "25,7071"
     def test_configure_ssh_port_ubuntu22_and_24(self):
         fs = self.tmp / 'fs'
         (fs / 'etc/ssh').mkdir(parents=True, exist_ok=True)
+        (fs / 'etc/ssh/sshd_config').write_text('#Port 22\nInclude /etc/ssh/sshd_config.d/*.conf\n')
         (fs / 'etc/systemd/system').mkdir(parents=True, exist_ok=True)
         (fs / 'usr/lib/systemd/system').mkdir(parents=True, exist_ok=True)
         (fs / 'usr/lib/systemd/system/ssh.socket').touch()
@@ -275,6 +276,8 @@ sshd() { return 0; }
         conf_dropin = fs / 'etc/ssh/sshd_config.d/50-zimbra-ssh-port.conf'
         self.assertTrue(conf_dropin.exists())
         self.assertIn('Port 2210', conf_dropin.read_text())
+        main_conf = fs / 'etc/ssh/sshd_config'
+        self.assertIn('Port 2210', main_conf.read_text())
         socket_dropin = fs / 'etc/systemd/system/ssh.socket.d/listen.conf'
         self.assertTrue(socket_dropin.exists())
         self.assertIn('ListenStream=0.0.0.0:2210', socket_dropin.read_text())

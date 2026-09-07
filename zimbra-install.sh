@@ -399,14 +399,14 @@ EOF
     fi
     chmod 644 /etc/ssh/sshd_config.d/50-zimbra-ssh-port.conf
 
-    # Ensure /etc/ssh/sshd_config doesn't override with a hardcoded old Port if sshd_config.d is not included
+    # 2. Update /etc/ssh/sshd_config directly so the file explicitly shows Port $target_port
     if [[ -f /etc/ssh/sshd_config ]]; then
-        if ! grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' /etc/ssh/sshd_config; then
-            if grep -Eq '^[[:space:]]*Port[[:space:]]+' /etc/ssh/sshd_config; then
-                sed -i -E "s/^[[:space:]]*Port[[:space:]]+[0-9]+/Port $target_port/" /etc/ssh/sshd_config
-            else
-                printf '\n# Configured by zimbra-install.sh\nPort %s\n' "$target_port" >> /etc/ssh/sshd_config
-            fi
+        if grep -Eq '^[[:space:]]*Port[[:space:]]+' /etc/ssh/sshd_config; then
+            TARGET_PORT="$target_port" perl -i -pe 's/^[ \t]*Port[ \t]+\d+/Port $ENV{TARGET_PORT}/' /etc/ssh/sshd_config
+        elif grep -Eq '^[#[:space:]]*Port[[:space:]]+' /etc/ssh/sshd_config; then
+            TARGET_PORT="$target_port" perl -i -pe 'if (!$done && s/^[#\s]*Port\s+\d+/Port $ENV{TARGET_PORT}/) { $done = 1; }' /etc/ssh/sshd_config
+        else
+            printf '\n# Configured by zimbra-install.sh\nPort %s\n' "$target_port" >> /etc/ssh/sshd_config
         fi
     fi
 
