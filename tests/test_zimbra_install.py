@@ -277,7 +277,7 @@ sshd() { return 0; }
         self.assertIn('Port 2210', conf_dropin.read_text())
         socket_dropin = fs / 'etc/systemd/system/ssh.socket.d/listen.conf'
         self.assertTrue(socket_dropin.exists())
-        self.assertIn('ListenStream=2210', socket_dropin.read_text())
+        self.assertIn('ListenStream=0.0.0.0:2210', socket_dropin.read_text())
 
 
 if __name__ == '__main__':

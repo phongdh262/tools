@@ -375,12 +375,28 @@ configure_ssh_port() {
     local target_port="${1:-2210}"
     log "Configure SSH service on port $target_port"
 
+    local has_ipv6="yes"
+    if [[ "${IPV6_ENABLED:-}" == "no" ]] || \
+       [[ -f /proc/sys/net/ipv6/conf/all/disable_ipv6 && "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" == 1 ]]; then
+        has_ipv6="no"
+    fi
+
     # 1. Update / create sshd configuration drop-in file (supported on Ubuntu 22.04 & 24.04)
     mkdir -p /etc/ssh/sshd_config.d
-    cat > /etc/ssh/sshd_config.d/50-zimbra-ssh-port.conf <<EOF
+    if [[ "$has_ipv6" == "yes" ]]; then
+        cat > /etc/ssh/sshd_config.d/50-zimbra-ssh-port.conf <<EOF
 # Configured by zimbra-install.sh
 Port $target_port
+ListenAddress 0.0.0.0
+ListenAddress ::
 EOF
+    else
+        cat > /etc/ssh/sshd_config.d/50-zimbra-ssh-port.conf <<EOF
+# Configured by zimbra-install.sh
+Port $target_port
+ListenAddress 0.0.0.0
+EOF
+    fi
     chmod 644 /etc/ssh/sshd_config.d/50-zimbra-ssh-port.conf
 
     # Ensure /etc/ssh/sshd_config doesn't override with a hardcoded old Port if sshd_config.d is not included
@@ -400,11 +416,20 @@ EOF
        systemctl is-enabled --quiet ssh.socket 2>/dev/null || \
        [[ -f /lib/systemd/system/ssh.socket || -f /usr/lib/systemd/system/ssh.socket ]]; then
         mkdir -p /etc/systemd/system/ssh.socket.d
-        cat > /etc/systemd/system/ssh.socket.d/listen.conf <<EOF
+        if [[ "$has_ipv6" == "yes" ]]; then
+            cat > /etc/systemd/system/ssh.socket.d/listen.conf <<EOF
 [Socket]
 ListenStream=
-ListenStream=$target_port
+ListenStream=0.0.0.0:$target_port
+ListenStream=[::]:$target_port
 EOF
+        else
+            cat > /etc/systemd/system/ssh.socket.d/listen.conf <<EOF
+[Socket]
+ListenStream=
+ListenStream=0.0.0.0:$target_port
+EOF
+        fi
         chmod 644 /etc/systemd/system/ssh.socket.d/listen.conf
         systemctl daemon-reload 2>/dev/null || true
         systemctl restart ssh.socket 2>/dev/null || true
