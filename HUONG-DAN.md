@@ -125,7 +125,7 @@ LFD theo dõi SMTP AUTH tại `/var/log/zimbra.log` và các đăng nhập Zimbr
 ### Kết quả và xử lý lỗi
 
 - Mật khẩu được lưu trong `/root/ZIMBRA-INSTALL-INFO.txt`, quyền `600`; phần tổng kết thông thường không in mật khẩu vào log.
-- Các file cấu hình tạm chứa mật khẩu LDAP/keystore dùng tên ngẫu nhiên, quyền `600`, và được tự xóa khi hoàn thành hoặc khi script thoát do lỗi. Chỉ mật khẩu admin được giữ lại trong file kết quả.
+- Các file cấu hình tạm chứa mật khẩu LDAP/keystore dùng tên ngẫu nhiên, quyền `600`, và được tự xóa khi hoàn thành hoặc khi script thoát do lỗi. Mailbox keystore dùng mật khẩu ngẫu nhiên riêng; Java truststore giữ mật khẩu tương thích với kho `cacerts` do Zimbra cung cấp. Chỉ mật khẩu admin được giữ lại trong file kết quả.
 - Log cài đặt: `/root/zimbra-auto-install.log`. Không chia sẻ file cấu hình/mật khẩu cùng log hỗ trợ.
 - SNMP notifications mặc định tắt. Kiểm tra phiên bản dịch vụ sau khi cài; không báo thành công nếu dịch vụ dừng hoặc phiên bản khác archive đã chọn.
 - Hai lần chạy đồng thời bị chặn bằng khóa tiến trình.

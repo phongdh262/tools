@@ -1256,7 +1256,7 @@ clear_internal_secrets() {
     unset LDAP_ROOT_PASS LDAP_ADMIN_PASS LDAP_AMAVIS_PASS LDAP_POSTFIX_PASS
     unset LDAP_NGINX_PASS LDAP_REP_PASS SPAM_ACCOUNT_PASS HAM_ACCOUNT_PASS
     unset QUARANTINE_ACCOUNT_PASS MAILBOXD_KEYSTORE_PASS
-    unset MAILBOXD_TRUSTSTORE_PASS CONFIG_ADMIN_PASS
+    unset CONFIG_ADMIN_PASS
 }
 
 repair_bootstrap_dns() {
@@ -1902,7 +1902,6 @@ LDAP_POSTFIX_PASS=$(openssl rand -hex 20)
 LDAP_NGINX_PASS=$(openssl rand -hex 20)
 LDAP_REP_PASS=$(openssl rand -hex 20)
 MAILBOXD_KEYSTORE_PASS=$(openssl rand -hex 20)
-MAILBOXD_TRUSTSTORE_PASS=$(openssl rand -hex 20)
 SYSTEM_ACCOUNT_SUFFIX=$(openssl rand -hex 5)
 SPAM_ACCOUNT="spam.${SYSTEM_ACCOUNT_SUFFIX}@${DOMAIN}"
 HAM_ACCOUNT="ham.${SYSTEM_ACCOUNT_SUFFIX}@${DOMAIN}"
@@ -2011,7 +2010,9 @@ ldap_bes_searcher_password="$LDAP_ADMIN_PASS"
 ldap_nginx_password="$LDAP_NGINX_PASS"
 
 mailboxd_keystore_password="$MAILBOXD_KEYSTORE_PASS"
-mailboxd_truststore_password="$MAILBOXD_TRUSTSTORE_PASS"
+# Zimbra's bundled Java cacerts store is created with this vendor password.
+# Changing only localconfig would make zmcertmgr deployca unable to open it.
+mailboxd_truststore_password="changeit"
 
 zimbraIPMode="ipv4"
 

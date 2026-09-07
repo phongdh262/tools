@@ -304,8 +304,9 @@ verify_firewall_rules 443""")
         self.assertIn('CONFIG_FILE=$(mktemp /root/zimbra-setup.XXXXXX)', SOURCE)
         self.assertIn('rm -f -- "$CONFIG_FILE"', SOURCE)
         self.assertIn('MAILBOXD_KEYSTORE_PASS=$(openssl rand -hex 20)', SOURCE)
-        self.assertIn('MAILBOXD_TRUSTSTORE_PASS=$(openssl rand -hex 20)', SOURCE)
-        self.assertNotIn('mailboxd_truststore_password="changeit"', SOURCE)
+        self.assertNotIn('MAILBOXD_TRUSTSTORE_PASS=', SOURCE)
+        self.assertIn('mailboxd_truststore_password="changeit"', SOURCE)
+        self.assertIn('Changing only localconfig would make zmcertmgr deployca unable to open it.', SOURCE)
         self.assertIn('clear_internal_secrets', SOURCE)
 
     def test_host_and_resolver_commit_only_after_zimbra_verification(self):
