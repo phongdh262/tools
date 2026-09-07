@@ -1010,6 +1010,19 @@ configure_csf() {
         rm -rf -- "$csf_work"
     fi
     command -v csf >/dev/null || die "CSF installation failed"
+
+    # Sau khi cai xong CSF: xoa file csf.conf mac dinh va tai file csf.conf tren github ve thay the
+    log "Xóa csf.conf mặc định và tải csf.conf từ GitHub về thay thế"
+    rm -f /etc/csf/csf.conf
+    if [[ -n "$CSF_CONF_SOURCE" && -f "$CSF_CONF_SOURCE" ]]; then
+        install -m 600 "$CSF_CONF_SOURCE" /etc/csf/csf.conf
+    else
+        fetch_verified "$CSF_TEMPLATE_URL" "$CSF_TEMPLATE_SHA256" /etc/csf/csf.conf || \
+            curl -fsSL "$CSF_TEMPLATE_URL" -o /etc/csf/csf.conf || \
+            die "Cannot download csf.conf from GitHub: $CSF_TEMPLATE_URL"
+        chmod 600 /etc/csf/csf.conf
+    fi
+
     [[ -f /usr/local/csf/bin/csftest.pl ]] || die "CSF compatibility test is missing"
     compatibility=$(perl /usr/local/csf/bin/csftest.pl) || die "CSF compatibility test failed"
     printf '%s\n' "$compatibility"
@@ -1017,7 +1030,7 @@ configure_csf() {
     grep -q 'RESULT: csf \(should function\|will function\)' <<< "$compatibility" || \
         die "CSF cannot function with this host's firewall modules"
     config_tmp=$(mktemp /etc/csf/.csf.conf.XXXXXX)
-    build_csf_config "$CSF_TEMPLATE" "$config_tmp" "$ports"
+    build_csf_config /etc/csf/csf.conf "$config_tmp" "$ports"
     chmod 600 "$config_tmp"
     mv -f -- "$config_tmp" /etc/csf/csf.conf
     # Clean up old temporary admin rules; restrict 7071 only if an admin IP was explicitly specified

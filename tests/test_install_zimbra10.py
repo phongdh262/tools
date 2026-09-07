@@ -231,10 +231,17 @@ verify_firewall_rules 443""")
     def test_no_untrusted_csf_cache(self):
         self.assertNotIn('"/tmp/csf.tgz"', SOURCE)
         self.assertNotIn('"./csf.tgz"', SOURCE)
-        self.assertNotIn('rm -f /etc/csf/csf.conf', SOURCE)
+        self.assertIn('rm -f /etc/csf/csf.conf', SOURCE)
         self.assertNotIn('SNMPNOTIFY="yes"', SOURCE)
         self.assertIn('zimbra-auto-admin', SOURCE)
         self.assertIn('25 80 443 465 587 993 995', SOURCE)
+
+    def test_csf_conf_github_replacement(self):
+        expected_url = 'https://raw.githubusercontent.com/phongdh262/tools/main/csf.conf'
+        self.assertIn(f'CSF_TEMPLATE_URL="{expected_url}"', SOURCE)
+        expected_hash = hashlib.sha256((ROOT / 'csf.conf').read_bytes()).hexdigest()
+        self.assertIn(f'CSF_TEMPLATE_SHA256="{expected_hash}"', SOURCE)
+        self.assertIn('rm -f /etc/csf/csf.conf', SOURCE)
 
 
 if __name__ == '__main__':
