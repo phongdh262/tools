@@ -62,7 +62,7 @@ sha256sum -c zcs-10.1.20_GA_0326.UBUNTU24_64.20260821120929.tgz.sha256
 
 ### Quyền truy cập firewall
 
-Script cài CSF **15.10** từ Aetherinox khi máy chưa có CSF, xác minh SHA-256 và kiểm tra tương thích trước khi chuyển từ UFW. Nếu CSF đã có sẵn, script giữ bản cài hiện tại; quản trị viên vẫn cần theo dõi bản vá của CSF đang sử dụng. Tự cập nhật CSF qua mạng được tắt trong mẫu để tránh thay đổi phiên bản ngoài kiểm soát.
+Script cài CSF **15.10** từ file `csf.tgz` lưu trong repository (hoặc đặt sẵn cùng thư mục script), xác minh SHA-256 và kiểm tra tương thích trước khi chuyển từ UFW. Nếu CSF đã có sẵn, script giữ bản cài hiện tại; quản trị viên vẫn cần theo dõi bản vá của CSF đang sử dụng. Tự cập nhật CSF qua mạng được tắt trong mẫu để tránh thay đổi phiên bản ngoài kiểm soát.
 
 - Mở công khai TCP `25,80,443,465,587,993,995,7071` và các cổng SSH phát hiện được.
 - Cả SSH và trang Admin `7071` đều mở tự do theo mặc định (không giới hạn theo IP của kỹ thuật viên khi cài đặt), giúp khách hàng truy cập trang quản trị bình thường từ bất kỳ mạng nào. LFD (`zimbra-auth.pm`) tự động theo dõi và khóa IP tạm thời nếu có hành vi brute force mật khẩu trên cổng 7071.

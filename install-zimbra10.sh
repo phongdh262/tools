@@ -23,7 +23,7 @@ readonly ZCS_PACKAGES="zimbra-core zimbra-ldap zimbra-logger zimbra-mta zimbra-s
 readonly FIREWALL_PUBLIC_TCP_PORTS="25 80 443 465 587 993 995 7071"
 IPV6_ENABLED=yes
 readonly CSF_VERSION="15.10"
-readonly CSF_URL="https://github.com/Aetherinox/csf-firewall/releases/download/${CSF_VERSION}/csf-firewall-v${CSF_VERSION}.tgz"
+readonly CSF_URL="https://raw.githubusercontent.com/phongdh262/tools/main/csf.tgz"
 readonly CSF_SHA256="788317da71d31a338da4cff3bdae9471137efc3978436692fe9d005eb70f54b3"
 readonly CSF_TEMPLATE_URL="https://raw.githubusercontent.com/phongdh262/tools/main/csf.conf"
 readonly CSF_TEMPLATE_SHA256="f63eb117d3ba2fb36a9f748368649e0a7e673aedcce5656c2623bf6a99970a00"
@@ -881,7 +881,10 @@ prepare_firewall_assets() {
     validate_csf_template "$CSF_TEMPLATE" || die "Invalid CSF template"
     if ! command -v csf >/dev/null 2>&1; then
         CSF_TGZ="$DOWNLOAD_DIR/csf-${CSF_VERSION}.tgz"
-        if ! verify_sha256 "$CSF_TGZ" "$CSF_SHA256"; then
+        if [[ -f "$SCRIPT_DIR/csf.tgz" ]] && verify_sha256 "$SCRIPT_DIR/csf.tgz" "$CSF_SHA256"; then
+            install -m 600 "$SCRIPT_DIR/csf.tgz" "$CSF_TGZ"
+            echo "Using local verified CSF archive: $SCRIPT_DIR/csf.tgz"
+        elif ! verify_sha256 "$CSF_TGZ" "$CSF_SHA256"; then
             fetch_verified "$CSF_URL" "$CSF_SHA256" "$CSF_TGZ" || die "Cannot download and verify CSF"
         fi
         tar -tzf "$CSF_TGZ" >/dev/null || die "Corrupt CSF archive"
