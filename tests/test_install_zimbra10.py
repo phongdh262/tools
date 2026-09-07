@@ -69,12 +69,14 @@ class InstallerTests(unittest.TestCase):
     def test_uploaded_config_replaces_default_and_opens_required_ports(self):
         template = ROOT / 'csf.conf'
         uploaded = self.tmp / 'uploaded.conf'
+        content = template.read_text()
+        tcp_in = re.search(r'^TCP_IN = ".*"$', content, re.M).group()
+        tcp6_in = re.search(r'^TCP6_IN = ".*"$', content, re.M).group()
+        custom1_log = re.search(r'^CUSTOM1_LOG = "(.*)"$', content, re.M).group(1)
         uploaded.write_text(
-            template.read_text()
-            .replace('TCP_IN = "22,25,80,443,465,587,993,995,7071"',
-                     'TCP_IN = "10050"')
-            .replace('TCP6_IN = "22,25,80,443,465,587,993,995,7071"',
-                     'TCP6_IN = "10050"')
+            content
+            .replace(tcp_in, 'TCP_IN = "10050"')
+            .replace(tcp6_in, 'TCP6_IN = "10050"')
             + '\n# Uploaded configuration marker\n'
         )
         output = self.tmp / 'result.conf'
@@ -85,7 +87,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(values['TCP6_IN'], '25,443,2222,7071,10050')
         self.assertIn('# Uploaded configuration marker', output.read_text())
         self.assertEqual(values['TESTING'], '0')
-        self.assertEqual(values['CUSTOM1_LOG'], '/opt/zimbra/log/audit.log')
+        self.assertEqual(values['CUSTOM1_LOG'], custom1_log)
 
         # When ADMIN_CIDR is explicitly set -> 7071 is stripped from public TCP_IN
         restricted_output = self.tmp / 'restricted.conf'

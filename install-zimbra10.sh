@@ -26,7 +26,7 @@ readonly CSF_VERSION="15.10"
 readonly CSF_URL="https://raw.githubusercontent.com/phongdh262/tools/main/csf.tgz"
 readonly CSF_SHA256="788317da71d31a338da4cff3bdae9471137efc3978436692fe9d005eb70f54b3"
 readonly CSF_TEMPLATE_URL="https://raw.githubusercontent.com/phongdh262/tools/main/csf.conf"
-readonly CSF_TEMPLATE_SHA256="f63eb117d3ba2fb36a9f748368649e0a7e673aedcce5656c2623bf6a99970a00"
+readonly CSF_TEMPLATE_SHA256="ebd85651883941018c3b318b9ee18aa130342e1801d26ea2342b567adcb13cff"
 ADMIN_CIDR=""
 CSF_CONF_SOURCE=""
 LOCAL_IP=""
@@ -1029,10 +1029,23 @@ configure_csf() {
     # csftest.pl can report FATAL while returning exit code zero.
     grep -q 'RESULT: csf \(should function\|will function\)' <<< "$compatibility" || \
         die "CSF cannot function with this host's firewall modules"
-    config_tmp=$(mktemp /etc/csf/.csf.conf.XXXXXX)
-    build_csf_config /etc/csf/csf.conf "$config_tmp" "$ports"
-    chmod 600 "$config_tmp"
-    mv -f -- "$config_tmp" /etc/csf/csf.conf
+    # Neu co chi dinh ADMIN_CIDR thi moi thay doi de han che port 7071 trong csf.conf
+    # Mac dinh giu nguyen 100% noi dung file csf.conf mau tu GitHub
+    if [[ -n "$ADMIN_CIDR" ]]; then
+        config_tmp=$(mktemp /etc/csf/.csf.conf.XXXXXX)
+        build_csf_config /etc/csf/csf.conf "$config_tmp" "$ports"
+        chmod 600 "$config_tmp"
+        mv -f -- "$config_tmp" /etc/csf/csf.conf
+    fi
+
+    # Dam bao cong SSH khong bi khoa neu may chu dung cong SSH tuy bien
+    local ssh_p
+    ssh_p=$(detect_ssh_port)
+    if [[ -n "$ssh_p" && "$ssh_p" != "22" ]]; then
+        sed -i '/ # zimbra-custom-ssh$/d' /etc/csf/csf.allow
+        printf 'tcp|in|d=%s|s=0.0.0.0/0 # zimbra-custom-ssh\n' "$ssh_p" >> /etc/csf/csf.allow
+    fi
+
     # Clean up old temporary admin rules; restrict 7071 only if an admin IP was explicitly specified
     touch /etc/csf/csf.allow
     sed -i '/ # zimbra-auto-admin$/d' /etc/csf/csf.allow
@@ -1869,6 +1882,7 @@ log "Configure Zimbra"
 # AVDOMAIN is set. Verify them against the primary mail domain and repair the
 # configuration before reporting a successful installation.
 ensure_zimbra_system_accounts
+rm -f "$CONFIG_FILE"
 
 # ------------------------------------------------------------
 # Verification
