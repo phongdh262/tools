@@ -16,7 +16,7 @@ readonly SCRIPT_DIR
 # Firewall    : ConfigServer Security & Firewall (CSF + LFD)
 #
 # Usage:
-#   sudo bash install-zimbra10.sh --domain example.com
+#   sudo bash zimbra-install.sh --domain example.com
 # ============================================================
 
 readonly ZCS_PACKAGES="zimbra-core zimbra-ldap zimbra-logger zimbra-mta zimbra-snmp zimbra-store zimbra-apache zimbra-spell zimbra-memcached zimbra-proxy"

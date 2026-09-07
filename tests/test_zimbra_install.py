@@ -11,7 +11,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / 'install-zimbra10.sh'
+SCRIPT = ROOT / 'zimbra-install.sh'
 SOURCE = SCRIPT.read_text()
 
 

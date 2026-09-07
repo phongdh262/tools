@@ -6,7 +6,7 @@ Kho script: [phongdh262/tools](https://github.com/phongdh262/tools), nhánh `mai
 
 | Script | Chức năng | Chạy bằng |
 |---|---|---|
-| `install-zimbra10.sh` | Cài tự động Zimbra 10 FOSS trên Ubuntu 22.04 / 24.04 (Auto OS + CSF Firewall) | `root` |
+| `zimbra-install.sh` | Cài tự động Zimbra 10 FOSS trên Ubuntu 22.04 / 24.04 (Auto OS + CSF Firewall) | `root` |
 | `install-zimbra.sh` | Cài tự động Zimbra 10.1.20 FOSS trên Ubuntu 22.04 | `root` |
 | `zimbra-ssl.sh` | Cấp và tự động gia hạn SSL Let's Encrypt cho Zimbra | `root` |
 | `zimbra-ssl-deploy.sh` | Kiểm tra/deploy certificate thương mại có sẵn vào Zimbra | `root` |
@@ -28,7 +28,7 @@ Không dùng `source` hoặc `. script.sh`; hãy chạy script trực tiếp b�
 
 ## 1. Cài Zimbra tự động trên Ubuntu 22.04 / 24.04
 
-Dùng `install-zimbra10.sh` cho cài mới. Script tự nhận diện Ubuntu, chọn đúng archive Zimbra **10.1.20** và xác minh SHA-256 trước khi giải nén.
+Dùng `zimbra-install.sh` cho cài mới. Script tự nhận diện Ubuntu, chọn đúng archive Zimbra **10.1.20** và xác minh SHA-256 trước khi giải nén.
 
 | Ubuntu | Build | Release |
 |---|---|---|
@@ -46,13 +46,13 @@ Dùng `install-zimbra10.sh` cho cài mới. Script tự nhận diện Ubuntu, ch
 ### Cài đặt cơ bản
 
 ```bash
-wget --no-cache -O install-zimbra10.sh \
-  "https://raw.githubusercontent.com/phongdh262/tools/main/install-zimbra10.sh"
-chmod +x install-zimbra10.sh
-sudo ./install-zimbra10.sh --domain example.com
+wget --no-cache -O zimbra-install.sh \
+  "https://raw.githubusercontent.com/phongdh262/tools/main/zimbra-install.sh"
+chmod +x zimbra-install.sh
+sudo ./zimbra-install.sh --domain example.com
 ```
 
-Đặt file `csf.conf` có sẵn cạnh `install-zimbra10.sh`. Sau khi cài CSF, script kiểm tra rồi dùng toàn bộ file này thay thế `/etc/csf/csf.conf`. Có thể chọn một file ở đường dẫn khác bằng `--csf-conf /duong-dan/csf.conf`. Nếu không có file cục bộ, script tải bản mẫu đã cố định theo commit và SHA-256 từ repository.
+Đặt file `csf.conf` có sẵn cạnh `zimbra-install.sh`. Sau khi cài CSF, script kiểm tra rồi dùng toàn bộ file này thay thế `/etc/csf/csf.conf`. Có thể chọn một file ở đường dẫn khác bằng `--csf-conf /duong-dan/csf.conf`. Nếu không có file cục bộ, script tải bản mẫu đã cố định theo commit và SHA-256 từ repository.
 
 Archive lớn được lưu trong **GitHub Releases**, còn checksum được lưu cả trong git và release. Kiểm tra bộ Ubuntu 24.04 tải thủ công:
 
@@ -76,16 +76,16 @@ Ví dụ chỉ định file cấu hình CSF đã upload hoặc giới hạn IP q
 
 ```bash
 # Cài đặt thông thường (cổng 7071 mở cho khách hàng truy cập)
-sudo ./install-zimbra10.sh --domain example.com --csf-conf /root/csf.conf
+sudo ./zimbra-install.sh --domain example.com --csf-conf /root/csf.conf
 
 # Tùy chọn nếu muốn giới hạn riêng cổng 7071 cho IP cố định của khách hàng
-sudo ./install-zimbra10.sh --domain example.com --admin-ip 203.0.113.25 --csf-conf /root/csf.conf
+sudo ./zimbra-install.sh --domain example.com --admin-ip 203.0.113.25 --csf-conf /root/csf.conf
 ```
 
 ### VPS có NAT và DNS
 
 ```bash
-sudo ./install-zimbra10.sh \
+sudo ./zimbra-install.sh \
   --domain example.com \
   --ip 203.0.113.10 \
   --local-ip 10.0.0.10
@@ -102,20 +102,20 @@ Resolver được kiểm tra trước APT, sao lưu trước khi thay đổi, ki
 ```bash
 # Mật khẩu tự sinh nếu không truyền file; tránh truyền mật khẩu qua command line.
 chmod 600 /root/zimbra-admin-password
-sudo ./install-zimbra10.sh --domain example.com \
+sudo ./zimbra-install.sh --domain example.com \
   --password-file /root/zimbra-admin-password
 
 # Chỉ sửa firewall trên máy đã cài Zimbra; không đổi hostname/múi giờ.
-sudo ./install-zimbra10.sh --only-firewall --admin-ip 203.0.113.25 --csf-conf /root/csf.conf
+sudo ./zimbra-install.sh --only-firewall --admin-ip 203.0.113.25 --csf-conf /root/csf.conf
 
 # Không cấu hình CSF
-sudo ./install-zimbra10.sh --domain example.com --skip-firewall
+sudo ./zimbra-install.sh --domain example.com --skip-firewall
 
 # Archive tùy chọn phải có checksum chỉ định rõ
-sudo ./install-zimbra10.sh --domain example.com \
+sudo ./zimbra-install.sh --domain example.com \
   --installer /root/zimbra.tgz --sha256 EXPECTED_SHA256
 
-./install-zimbra10.sh --help
+./zimbra-install.sh --help
 ```
 
 LFD theo dõi SMTP AUTH tại `/var/log/zimbra.log` và các đăng nhập Zimbra thất bại có IP hợp lệ tại `/opt/zimbra/log/audit.log`. Quy tắc Zimbra chặn tạm 300 giây sau 5 lần thất bại; không tin địa chỉ forwarded do client cung cấp và không chặn loopback. Với proxy bên ngoài, cần kiểm tra địa chỉ ghi trong log và cấu hình trust riêng trước khi dựa vào LFD. Kiểm tra thực tế đăng nhập sai, log `/var/log/lfd.log`, và cơ chế mở khóa từ console của VPS.
@@ -133,8 +133,8 @@ LFD theo dõi SMTP AUTH tại `/var/log/zimbra.log` và các đăng nhập Zimbr
 Kiểm tra hồi quy trước khi sửa script:
 
 ```bash
-bash -n install-zimbra10.sh
-shellcheck install-zimbra10.sh
+bash -n zimbra-install.sh
+shellcheck zimbra-install.sh
 python3 -m unittest discover -s tests -v
 ```
 
