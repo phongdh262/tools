@@ -67,18 +67,30 @@ class InstallerTests(unittest.TestCase):
                 self.bash(setup + 'validate_admin_password "$1"', password, ok=False).returncode,
                 0)
 
-    def test_fqdn_dns_safety_ignores_local_hosts_but_rejects_public_loopback(self):
-        safe = '''FQDN=mail.example.com
+    def test_fqdn_dns_status_never_blocks_unpointed_domains(self):
+        safe = '''FQDN=mail.example.com; SERVER_IP=203.0.113.10
 getent() { printf '%s\n' '127.0.1.1 STREAM mail.example.com'; }
 dig() { printf '%s\n' '203.0.113.10'; }
-check_fqdn_dns_safety'''
-        self.bash(safe)
+report_fqdn_dns_status'''
+        result = self.bash(safe)
+        self.assertIn('includes VPS IP', result.stdout)
 
         for address in ['127.0.0.1', '127.0.1.1', '0.0.0.0', '::1', '::']:
-            unsafe = f'''FQDN=mail.example.com
+            unpointed = f'''FQDN=mail.example.com; SERVER_IP=203.0.113.10
 dig() {{ printf '%s\\n' '{address}'; }}
-check_fqdn_dns_safety'''
-            self.assertNotEqual(self.bash(unsafe, ok=False).returncode, 0)
+report_fqdn_dns_status'''
+            result = self.bash(unpointed)
+            self.assertIn('Installation will continue with local DNS', result.stdout)
+
+        missing = '''FQDN=mail.example.com; SERVER_IP=203.0.113.10
+dig() { :; }
+report_fqdn_dns_status'''
+        self.assertIn('has no A/AAAA record', self.bash(missing).stdout)
+
+        different = '''FQDN=mail.example.com; SERVER_IP=203.0.113.10
+dig() { printf '%s\n' '198.51.100.20'; }
+report_fqdn_dns_status'''
+        self.assertIn('not VPS IP', self.bash(different).stdout)
 
     def test_password_file_must_be_private_regular_file(self):
         password_file = self.tmp / 'admin-password'

@@ -520,8 +520,9 @@ read_admin_password_file() {
     [[ -n "$ADMIN_PASS" ]] || die "Password file is empty: $file"
 }
 
-check_fqdn_dns_safety() {
+report_fqdn_dns_status() {
     local addresses=""
+    local displayed_addresses
     local resolver record_type response
 
     # Query public DNS directly. getent also reads /etc/hosts, where Ubuntu may
@@ -534,8 +535,21 @@ check_fqdn_dns_safety() {
             [[ -z "$response" ]] || addresses+=$'\n'"$response"
         done
     done
+    addresses=$(printf '%s\n' "$addresses" | sed '/^$/d' | sort -u)
+    if [[ -z "$addresses" ]]; then
+        echo "WARNING: Public DNS has no A/AAAA record for $FQDN; installation will continue with local DNS."
+        return
+    fi
+
+    displayed_addresses=$(printf '%s\n' "$addresses" | paste -sd, -)
     if grep -Eq '^(127\.|0\.0\.0\.0$|::1$|::$)' <<< "$addresses"; then
-        die "Public DNS for $FQDN resolves to a loopback or unspecified address"
+        echo "WARNING: Public DNS for $FQDN includes a loopback or unspecified address ($displayed_addresses)."
+        echo "WARNING: Installation will continue with local DNS; correct the public record before production use."
+    elif ! grep -Fxq "$SERVER_IP" <<< "$addresses"; then
+        echo "WARNING: Public DNS for $FQDN currently resolves to $displayed_addresses, not VPS IP $SERVER_IP."
+        echo "WARNING: Installation will continue with local DNS; update the public record when ready."
+    else
+        echo "Public DNS     : $FQDN includes VPS IP $SERVER_IP"
     fi
 }
 
@@ -1587,7 +1601,7 @@ if [[ -z "$SERVER_IP" ]]; then
     echo "Detected IPv4: $SERVER_IP"
 fi
 
-check_fqdn_dns_safety
+report_fqdn_dns_status
 report_ptr_status
 
 if [[ -z "$ADMIN_PASS" ]]; then

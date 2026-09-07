@@ -93,7 +93,7 @@ sudo ./install-zimbra10.sh \
 
 `--ip` là IP công khai; `--local-ip` phải có trên interface của VPS và được dùng cho hostname/DNS nội bộ. Nếu không truyền, script tự phát hiện từng địa chỉ.
 
-DNS nội bộ chỉ khai báo hostname mail và MX cục bộ, tiếp tục phân giải SPF/DKIM/DMARC và các tên miền con từ DNS công khai. Bạn vẫn phải tạo A/MX/SPF/DKIM/DMARC tại DNS provider, đặt PTR/rDNS tại nhà cung cấp VPS và cấu hình port forwarding/cloud firewall nếu có NAT. Bộ cài hiển thị bản ghi DKIM sau khi hoàn thành.
+DNS nội bộ chỉ khai báo hostname mail và MX cục bộ, tiếp tục phân giải SPF/DKIM/DMARC và các tên miền con từ DNS công khai. Domain chưa có A/AAAA, đang trỏ sang IP khác hoặc PTR chưa khớp chỉ tạo cảnh báo và không chặn cài đặt. Bạn vẫn phải tạo A/MX/SPF/DKIM/DMARC tại DNS provider, đặt PTR/rDNS tại nhà cung cấp VPS và cấu hình port forwarding/cloud firewall nếu có NAT. Bộ cài hiển thị bản ghi DKIM sau khi hoàn thành.
 
 Resolver được kiểm tra trước APT, sao lưu trước khi thay đổi, kiểm tra cấu hình dnsmasq trước khi chuyển, và khôi phục cùng hostname/`/etc/hosts` nếu Zimbra chưa cấu hình thành công. Bản sao nằm tại `/root/zimbra-resolver-backup.*` và `/root/zimbra-host-backup.*`; đường dẫn cụ thể được ghi trong kết quả cài đặt.
 
