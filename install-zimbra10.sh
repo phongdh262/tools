@@ -20,13 +20,13 @@ readonly SCRIPT_DIR
 # ============================================================
 
 readonly ZCS_PACKAGES="zimbra-core zimbra-ldap zimbra-logger zimbra-mta zimbra-snmp zimbra-store zimbra-apache zimbra-spell zimbra-memcached zimbra-proxy"
-readonly FIREWALL_PUBLIC_TCP_PORTS="25 80 443 465 587 993 995"
+readonly FIREWALL_PUBLIC_TCP_PORTS="25 80 443 465 587 993 995 7071"
 IPV6_ENABLED=yes
 readonly CSF_VERSION="15.10"
 readonly CSF_URL="https://github.com/Aetherinox/csf-firewall/releases/download/${CSF_VERSION}/csf-firewall-v${CSF_VERSION}.tgz"
 readonly CSF_SHA256="788317da71d31a338da4cff3bdae9471137efc3978436692fe9d005eb70f54b3"
 readonly CSF_TEMPLATE_URL="https://raw.githubusercontent.com/phongdh262/tools/5aee2ea3a1579637ed3e5449b1ff39caffae44f5/csf.conf"
-readonly CSF_TEMPLATE_SHA256="5e87bd15dc52a149f68cfdf6cb4243bdba2a15d90da19c763696ec62354ebc5e"
+readonly CSF_TEMPLATE_SHA256="f63eb117d3ba2fb36a9f748368649e0a7e673aedcce5656c2623bf6a99970a00"
 ADMIN_CIDR=""
 CSF_CONF_SOURCE=""
 LOCAL_IP=""
@@ -810,7 +810,9 @@ build_csf_config() {
     # Use the supplied configuration as the complete replacement. Only enforce
     # settings needed to activate it safely and keep required public/SSH ports.
     install -m 600 "$template" "$output"
-    remove_csf_tcp_port "$output" 7071
+    if [[ -n "$ADMIN_CIDR" ]]; then
+        remove_csf_tcp_port "$output" 7071
+    fi
     add_csf_tcp_ports "$output" "$ports"
     set_csf_value "$output" TESTING 0
     if [[ "$IPV6_ENABLED" == yes ]]; then set_csf_value "$output" IPV6 1
@@ -984,19 +986,17 @@ configure_csf() {
     if [[ ! -e /proc/sys/net/ipv6/conf/all/disable_ipv6 ]] || \
         [[ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)" == 1 ]]; then IPV6_ENABLED=no; fi
     # Preserve every configured/listening SSH port, including socket activation.
-    ports="$FIREWALL_PUBLIC_TCP_PORTS $(detect_ssh_port)"
+    if [[ -n "$ADMIN_CIDR" ]]; then
+        ports="$(printf '%s\n' "$FIREWALL_PUBLIC_TCP_PORTS" | sed 's/\b7071\b//') $(detect_ssh_port)"
+    else
+        ports="$FIREWALL_PUBLIC_TCP_PORTS $(detect_ssh_port)"
+    fi
     if command -v sshd >/dev/null 2>&1; then
         ports+=" $(sshd -T | awk '$1 == "port" {print $2}')"
     fi
     ports+=" $(systemctl show ssh.socket --property=Listen --value 2>/dev/null | awk '{n=split($1,a,":"); print a[n]}' || true)"
     ports+=" $(ss -H -lntp | awk '/"sshd"/ {n=split($4,a,":"); print a[n]}')"
     ports=$(printf '%s\n' "$ports" | tr ' ' '\n' | awk '/^[0-9]+$/ && $1 > 0 && $1 < 65536' | sort -nu | paste -sd, -)
-    if [[ -z "$ADMIN_CIDR" && -n "${SSH_CONNECTION:-}" ]]; then
-        admin_client=${SSH_CONNECTION%% *}
-        if is_valid_admin_network "$admin_client"; then
-            ADMIN_CIDR="$admin_client"
-        fi
-    fi
     [[ -z "$ADMIN_CIDR" ]] || is_valid_admin_network "$ADMIN_CIDR" || die "Invalid administrator IP/CIDR: $ADMIN_CIDR"
     snapshot_firewall
     if ! command -v csf >/dev/null 2>&1; then
@@ -1017,14 +1017,14 @@ configure_csf() {
     build_csf_config "$CSF_TEMPLATE" "$config_tmp" "$ports"
     chmod 600 "$config_tmp"
     mv -f -- "$config_tmp" /etc/csf/csf.conf
-    # Restrict Zimbra Admin Console (port 7071) to authorized administrator IP
+    # Clean up old temporary admin rules; restrict 7071 only if an admin IP was explicitly specified
     touch /etc/csf/csf.allow
     sed -i '/ # zimbra-auto-admin$/d' /etc/csf/csf.allow
     if [[ -n "$ADMIN_CIDR" ]]; then
         printf 'tcp|in|d=7071|s=%s # zimbra-auto-admin\n' "$ADMIN_CIDR" >> /etc/csf/csf.allow
         FIREWALL_ADMIN_ACCESS="7071/tcp restricted to $ADMIN_CIDR"
     else
-        FIREWALL_ADMIN_ACCESS="7071/tcp restricted (whitelist in /etc/csf/csf.allow: tcp|in|d=7071|s=YOUR_IP)"
+        FIREWALL_ADMIN_ACCESS="7071/tcp open (unrestricted)"
     fi
     install_zimbra_lfd_filter
     if command -v ufw >/dev/null 2>&1; then

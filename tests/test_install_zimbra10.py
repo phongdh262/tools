@@ -71,22 +71,28 @@ class InstallerTests(unittest.TestCase):
         uploaded = self.tmp / 'uploaded.conf'
         uploaded.write_text(
             template.read_text()
-            .replace('TCP_IN = "22,25,80,443,465,587,993,995"',
-                     'TCP_IN = "7071,10050"')
-            .replace('TCP6_IN = "22,25,80,443,465,587,993,995"',
-                     'TCP6_IN = "7071,10050"')
+            .replace('TCP_IN = "22,25,80,443,465,587,993,995,7071"',
+                     'TCP_IN = "10050"')
+            .replace('TCP6_IN = "22,25,80,443,465,587,993,995,7071"',
+                     'TCP6_IN = "10050"')
             + '\n# Uploaded configuration marker\n'
         )
         output = self.tmp / 'result.conf'
-        self.bash('build_csf_config "$1" "$2" "25,443,2222"', uploaded, output)
+        # Default: ADMIN_CIDR is empty -> 7071 is kept open for customer access
+        self.bash('build_csf_config "$1" "$2" "25,443,2222,7071"', uploaded, output)
         values = dict(re.findall(r'^(\w+) = "(.*)"$', output.read_text(), re.M))
-        self.assertEqual(values['TCP_IN'], '25,443,2222,10050')
-        self.assertEqual(values['TCP6_IN'], '25,443,2222,10050')
-        self.assertNotIn('7071', values['TCP_IN'].split(','))
-        self.assertNotIn('7071', values['TCP6_IN'].split(','))
+        self.assertEqual(values['TCP_IN'], '25,443,2222,7071,10050')
+        self.assertEqual(values['TCP6_IN'], '25,443,2222,7071,10050')
         self.assertIn('# Uploaded configuration marker', output.read_text())
         self.assertEqual(values['TESTING'], '0')
         self.assertEqual(values['CUSTOM1_LOG'], '/opt/zimbra/log/audit.log')
+
+        # When ADMIN_CIDR is explicitly set -> 7071 is stripped from public TCP_IN
+        restricted_output = self.tmp / 'restricted.conf'
+        self.bash('ADMIN_CIDR="203.0.113.10"\nbuild_csf_config "$1" "$2" "25,443,2222"', output, restricted_output)
+        restricted_values = dict(re.findall(r'^(\w+) = "(.*)"$', restricted_output.read_text(), re.M))
+        self.assertNotIn('7071', restricted_values['TCP_IN'].split(','))
+        self.assertNotIn('7071', restricted_values['TCP6_IN'].split(','))
 
     def test_failed_download_preserves_destination(self):
         target = self.tmp / 'csf.conf'

@@ -64,16 +64,21 @@ sha256sum -c zcs-10.1.20_GA_0326.UBUNTU24_64.20260821120929.tgz.sha256
 
 Script cài CSF **15.10** từ Aetherinox khi máy chưa có CSF, xác minh SHA-256 và kiểm tra tương thích trước khi chuyển từ UFW. Nếu CSF đã có sẵn, script giữ bản cài hiện tại; quản trị viên vẫn cần theo dõi bản vá của CSF đang sử dụng. Tự cập nhật CSF qua mạng được tắt trong mẫu để tránh thay đổi phiên bản ngoài kiểm soát.
 
-- Mở công khai TCP `25,80,443,465,587,993,995` và các cổng SSH phát hiện được (bỏ giới hạn IP cho SSH).
-- Cổng Admin `7071` được **giới hạn IP truy cập**: chỉ cho phép IP quản trị qua tùy chọn `--admin-ip IP` (hoặc `--admin-cidr CIDR`). Nếu không truyền, script tự động nhận diện IP từ phiên SSH đang kết nối. Nếu không xác định được IP quản trị, cổng 7071 sẽ không mở công khai mà cần khai báo thủ công trong `/etc/csf/csf.allow` (`tcp|in|d=7071|s=YOUR_IP`).
+- Mở công khai TCP `25,80,443,465,587,993,995,7071` và các cổng SSH phát hiện được.
+- Cả SSH và trang Admin `7071` đều mở tự do theo mặc định (không giới hạn theo IP của kỹ thuật viên khi cài đặt), giúp khách hàng truy cập trang quản trị bình thường từ bất kỳ mạng nào. LFD (`zimbra-auth.pm`) tự động theo dõi và khóa IP tạm thời nếu có hành vi brute force mật khẩu trên cổng 7071.
+- Nếu muốn giới hạn riêng cổng 7071 cho một IP quản trị cố định, có thể tùy chọn truyền `--admin-ip IP` (hoặc `--admin-cidr CIDR`).
 - Không mở công khai backend `8443`, FTP, DNS hay cổng giám sát trong danh sách cổng mặc định.
 - Giữ lại các rule `csf.allow` và `csf.deny` hiện có ngoài rule quản trị 7071 do script cập nhật.
 - IPv6 được cấu hình tương ứng khi IPv6 đang bật trên máy.
 - Cấu hình và rules cũ được sao lưu tại `/root/zimbra-firewall-backup.*`. Khi lỗi, script khôi phục; watchdog độc lập cũng thực hiện khôi phục nếu giao dịch không hoàn tất trong 10 phút. Các kiểm tra tự động xác minh rules và DNS, không thay thế kiểm tra SSH từ máy bên ngoài.
 
-Ví dụ chỉ định IP quản trị truy cập cổng 7071 và file cấu hình CSF tùy chọn:
+Ví dụ chỉ định file cấu hình CSF đã upload hoặc giới hạn IP quản trị tùy chọn:
 
 ```bash
+# Cài đặt thông thường (cổng 7071 mở cho khách hàng truy cập)
+sudo ./install-zimbra10.sh --domain example.com --csf-conf /root/csf.conf
+
+# Tùy chọn nếu muốn giới hạn riêng cổng 7071 cho IP cố định của khách hàng
 sudo ./install-zimbra10.sh --domain example.com --admin-ip 203.0.113.25 --csf-conf /root/csf.conf
 ```
 
