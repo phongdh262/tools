@@ -227,9 +227,20 @@ ip6tables-restore() { cat > restored-v6; }
 
     def test_firewall_verification_skips_disabled_ipv6(self):
         self.bash("""IPV6_ENABLED=no
-iptables() { printf '%s\\n' '-P INPUT DROP' '-A INPUT -p tcp --dport 443 -j ACCEPT'; }
+iptables() { printf '%s\n' '-P INPUT DROP' '-A INPUT -p tcp --dport 443 -j ACCEPT'; }
 ip6tables() { exit 99; }
 verify_firewall_rules 443""")
+
+    def test_firewall_verification_skips_ports_not_in_tcp6_in(self):
+        conf = self.tmp / 'csf.conf'
+        conf.write_text('IPV6 = "1"\nTCP_IN = "25,7071"\nTCP6_IN = "25"\n')
+        body = f"""IPV6_ENABLED=yes
+CSF_CONF_FILE="{conf}"
+iptables() {{ printf '%s\\n' '-P INPUT DROP' '-A INPUT -p tcp --dport 25 -j ACCEPT' '-A INPUT -p tcp --dport 7071 -j ACCEPT'; }}
+ip6tables() {{ printf '%s\\n' '-P INPUT DROP' '-A LOCALINPUT -p tcp --dport 25 -j ACCEPT'; }}
+verify_firewall_rules "25,7071"
+"""
+        self.bash(body)
 
     def test_no_untrusted_csf_cache(self):
         self.assertNotIn('"/tmp/csf.tgz"', SOURCE)

@@ -1135,13 +1135,31 @@ configure_csf() {
 }
 
 verify_firewall_rules() {
-    local ports="$1" command port rules
+    local ports="$1" command port rules tcp6_in=""
+    local csf_conf="${CSF_CONF_FILE:-/etc/csf/csf.conf}"
+    local csf_allow="${CSF_ALLOW_FILE:-/etc/csf/csf.allow}"
+    if [[ -f "$csf_conf" ]]; then
+        tcp6_in=$(grep -E '^[[:space:]]*TCP6_IN[[:space:]]*=' "$csf_conf" | sed -E 's/.*"([^"]*)".*/\1/' | tr ',' ' ')
+    fi
     for command in iptables ip6tables; do
         [[ "$command" != ip6tables || "$IPV6_ENABLED" == yes ]] || continue
+        if [[ "$command" == ip6tables && -f "$csf_conf" ]]; then
+            if grep -Eq '^[[:space:]]*IPV6[[:space:]]*=[[:space:]]*"0"' "$csf_conf"; then
+                continue
+            fi
+        fi
         rules=$("$command" -S)
         grep -q -- '^-P INPUT DROP$' <<< "$rules" || die "$command INPUT is not protected"
         for port in ${ports//,/ }; do
-            grep -Eq -- "^-A INPUT .*--dport ${port} .* -j ACCEPT$|^-A INPUT .*--dport ${port} -j ACCEPT$" <<< "$rules" || \
+            # Neu la ip6tables va csf.conf co khai bao TCP6_IN, chi kiem tra cac port thuc su duoc mo tren IPv6
+            if [[ "$command" == ip6tables && -n "$tcp6_in" ]]; then
+                if [[ ! " $tcp6_in " =~ [[:space:]]${port}[[:space:]] ]]; then
+                    if [[ ! -f "$csf_allow" ]] || ! grep -Eq "d=${port}(\||$)" "$csf_allow"; then
+                        continue
+                    fi
+                fi
+            fi
+            grep -Eq -- "^-A (INPUT|ALLOWIN|LOCALINPUT) .*--dport ${port}( |$).*-j ACCEPT" <<< "$rules" || \
                 die "Missing effective $command rule for TCP port $port"
         done
     done
