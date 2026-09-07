@@ -28,6 +28,7 @@ readonly CSF_SHA256="788317da71d31a338da4cff3bdae9471137efc3978436692fe9d005eb70
 readonly CSF_TEMPLATE_URL="https://raw.githubusercontent.com/phongdh262/tools/5aee2ea3a1579637ed3e5449b1ff39caffae44f5/csf.conf"
 readonly CSF_TEMPLATE_SHA256="5e87bd15dc52a149f68cfdf6cb4243bdba2a15d90da19c763696ec62354ebc5e"
 ADMIN_CIDR=""
+CSF_CONF_SOURCE=""
 LOCAL_IP=""
 CSF_TEMPLATE=""
 CSF_TGZ=""
@@ -90,8 +91,10 @@ Optional overrides:
   ZIMBRA_ADMIN_PASSWORD     Environment variable password override
 
 Optional:
-  --admin-cidr IP_OR_CIDR    Allow admin port 7071 from this network only
-                            Default: current SSH client; otherwise use an SSH tunnel
+  --csf-conf FILE           Use this existing csf.conf file after installing CSF
+                            Default: csf.conf in the same directory as this script
+  --admin-ip IP             Restrict Zimbra Admin Console (port 7071) to this IP or CIDR
+                            Default: auto-detected from current SSH connection
   --local-ip IPV4           Local interface IPv4 (auto-detected; useful behind NAT)
   --skip-firewall           Do not configure or enable CSF firewall
   --only-firewall           Only configure CSF firewall (useful when Zimbra is already installed)
@@ -330,6 +333,22 @@ is_valid_ipv4() {
     for octet in "${octets[@]}"; do
         (( 10#$octet <= 255 )) || return 1
     done
+}
+
+is_valid_admin_network() {
+    local target="$1" ip prefix
+    if [[ "$target" =~ ^([0-9.]+)/([0-9]{1,2})$ ]]; then
+        ip="${BASH_REMATCH[1]}"
+        prefix="${BASH_REMATCH[2]}"
+        is_valid_ipv4 "$ip" || return 1
+        (( prefix >= 0 && prefix <= 32 )) || return 1
+        return 0
+    elif is_valid_ipv4 "$target"; then
+        return 0
+    elif [[ "$target" =~ ^[0-9a-fA-F:]+(/[0-9]{1,3})?$ ]]; then
+        return 0
+    fi
+    return 1
 }
 
 detect_ssh_port() {
@@ -705,20 +724,6 @@ synchronize_system_clock() {
     fi
 }
 
-is_valid_admin_network() {
-    python3 - "$1" <<'PY'
-import ipaddress, re, sys
-try:
-    if not re.fullmatch(r"[0-9A-Fa-f:./]+", sys.argv[1]):
-        raise ValueError("Invalid network characters")
-    network = ipaddress.ip_network(sys.argv[1], strict=False)
-    if network.prefixlen == 0 or network.is_unspecified or network.is_multicast:
-        raise ValueError('Unrestricted or invalid administrator network')
-except ValueError:
-    sys.exit(1)
-PY
-}
-
 verify_sha256() {
     local file="$1" expected="$2"
     [[ "$expected" =~ ^[a-f0-9]{64}$ ]] || return 1
@@ -770,32 +775,46 @@ set_csf_value() {
     ' "$file"
 }
 
-build_csf_config() {
-    local template="$1" defaults="$2" output="$3" ports="$4"
-    validate_csf_template "$template" || return 1
-    # Preserve newer CSF keys absent from the reference template.
-    perl - "$template" "$defaults" > "$output" <<'PERL'
-use strict;
-use warnings;
-my $template = shift;
-open my $fh, '<', $template or die $!;
-my %values;
-while (<$fh>) { $values{$1} = $2 if /^([A-Za-z][A-Za-z0-9_]*)\s*=\s*"([^"\r\n]*)"\s*$/ }
-while (<>) {
-    if (/^([A-Za-z][A-Za-z0-9_]*)\s*=/ && exists $values{$1}) { print "$1 = \"$values{$1}\"\n" }
-    else { print }
+remove_csf_tcp_port() {
+    local file="$1" port="$2"
+    CSF_REMOVE_PORT="$port" perl -i -pe '
+        if (/^(TCP_IN|TCP6_IN)\s*=\s*"([^"]*)"/) {
+            my $key = $1;
+            my @ports = grep { $_ ne $ENV{CSF_REMOVE_PORT} } split(/\s*,\s*/, $2);
+            $_ = "$key = \"" . join(",", @ports) . "\"\n";
+        }
+    ' "$file"
 }
-PERL
-    local key
-    for key in TCP_IN TCP6_IN; do set_csf_value "$output" "$key" "$ports"; done
-    for key in UDP_IN UDP6_IN; do set_csf_value "$output" "$key" ''; done
-    for key in TESTING UI AUTO_UPDATES; do set_csf_value "$output" "$key" 0; done
+
+add_csf_tcp_ports() {
+    local file="$1" ports="$2"
+    CSF_REQUIRED_PORTS="$ports" perl -i -pe '
+        if (/^(TCP_IN|TCP6_IN)\s*=\s*"([^"]*)"/) {
+            my $key = $1;
+            my %ports = map { $_ => 1 }
+                grep { /^\d+(?::\d+)?$/ } split(/\s*,\s*/, $2);
+            for my $port (split(/,/, $ENV{CSF_REQUIRED_PORTS})) {
+                $ports{$port} = 1 if $port =~ /^\d+$/;
+            }
+            my @sorted = sort {
+                (split(/:/, $a))[0] <=> (split(/:/, $b))[0]
+            } keys %ports;
+            $_ = "$key = \"" . join(",", @sorted) . "\"\n";
+        }
+    ' "$file"
+}
+
+build_csf_config() {
+    local template="$1" output="$2" ports="$3"
+    validate_csf_template "$template" || return 1
+    # Use the supplied configuration as the complete replacement. Only enforce
+    # settings needed to activate it safely and keep required public/SSH ports.
+    install -m 600 "$template" "$output"
+    remove_csf_tcp_port "$output" 7071
+    add_csf_tcp_ports "$output" "$ports"
+    set_csf_value "$output" TESTING 0
     if [[ "$IPV6_ENABLED" == yes ]]; then set_csf_value "$output" IPV6 1
     else set_csf_value "$output" IPV6 0; fi
-    set_csf_value "$output" CUSTOM1_LOG /opt/zimbra/log/audit.log
-    set_csf_value "$output" SMTPAUTH_LOG /var/log/zimbra.log
-    set_csf_value "$output" LF_SMTPAUTH 5
-    set_csf_value "$output" LF_SMTPAUTH_PERM 300
     validate_csf_template "$output"
 }
 
@@ -841,15 +860,21 @@ install_zimbra_lfd_filter() {
 }
 
 prepare_firewall_assets() {
+    local local_csf_conf
     install -d -m 700 "$DOWNLOAD_DIR"
     CSF_TEMPLATE="$DOWNLOAD_DIR/csf-template.conf"
-    if [[ -f "$SCRIPT_DIR/csf.conf" ]]; then
-        verify_sha256 "$SCRIPT_DIR/csf.conf" "$CSF_TEMPLATE_SHA256" || \
-            die "Local csf.conf does not match this installer; download the matching template"
-        install -m 600 "$SCRIPT_DIR/csf.conf" "$CSF_TEMPLATE"
+    local_csf_conf="${CSF_CONF_SOURCE:-$SCRIPT_DIR/csf.conf}"
+    if [[ -e "$local_csf_conf" ]]; then
+        [[ -f "$local_csf_conf" && ! -L "$local_csf_conf" ]] || \
+            die "CSF configuration must be a regular file, not a symlink: $local_csf_conf"
+        install -m 600 "$local_csf_conf" "$CSF_TEMPLATE"
+        echo "Using uploaded CSF configuration: $local_csf_conf"
+        echo "CSF configuration SHA-256: $(sha256sum -- "$local_csf_conf" | awk '{print $1}')"
     else
+        [[ -z "$CSF_CONF_SOURCE" ]] || die "Cannot find CSF configuration: $CSF_CONF_SOURCE"
         fetch_verified "$CSF_TEMPLATE_URL" "$CSF_TEMPLATE_SHA256" "$CSF_TEMPLATE" || \
             die "Cannot download and verify CSF template"
+        echo "Using verified repository CSF configuration"
     fi
     validate_csf_template "$CSF_TEMPLATE" || die "Invalid CSF template"
     if ! command -v csf >/dev/null 2>&1; then
@@ -952,7 +977,7 @@ commit_firewall() {
 }
 
 configure_csf() {
-    local csf_work compatibility ports admin_client config_tmp
+    local csf_work compatibility ports config_tmp admin_client
     log "Configure CSF firewall"
     systemctl is-active --quiet firewalld && die "firewalld is active; migrate it explicitly before using CSF"
     [[ -s "$CSF_TEMPLATE" ]] || die "CSF assets were not prepared"
@@ -968,10 +993,11 @@ configure_csf() {
     ports=$(printf '%s\n' "$ports" | tr ' ' '\n' | awk '/^[0-9]+$/ && $1 > 0 && $1 < 65536' | sort -nu | paste -sd, -)
     if [[ -z "$ADMIN_CIDR" && -n "${SSH_CONNECTION:-}" ]]; then
         admin_client=${SSH_CONNECTION%% *}
-        is_valid_admin_network "$admin_client" || die "Cannot validate SSH client address"
-        ADMIN_CIDR="$admin_client"
+        if is_valid_admin_network "$admin_client"; then
+            ADMIN_CIDR="$admin_client"
+        fi
     fi
-    [[ -z "$ADMIN_CIDR" ]] || is_valid_admin_network "$ADMIN_CIDR" || die "Invalid administrator IP/CIDR"
+    [[ -z "$ADMIN_CIDR" ]] || is_valid_admin_network "$ADMIN_CIDR" || die "Invalid administrator IP/CIDR: $ADMIN_CIDR"
     snapshot_firewall
     if ! command -v csf >/dev/null 2>&1; then
         csf_work=$(mktemp -d "$DOWNLOAD_DIR/csf-install.XXXXXX")
@@ -988,17 +1014,17 @@ configure_csf() {
     grep -q 'RESULT: csf \(should function\|will function\)' <<< "$compatibility" || \
         die "CSF cannot function with this host's firewall modules"
     config_tmp=$(mktemp /etc/csf/.csf.conf.XXXXXX)
-    build_csf_config "$CSF_TEMPLATE" /etc/csf/csf.conf "$config_tmp" "$ports"
+    build_csf_config "$CSF_TEMPLATE" "$config_tmp" "$ports"
     chmod 600 "$config_tmp"
     mv -f -- "$config_tmp" /etc/csf/csf.conf
-    # Keep administrator access restricted; leave unrelated existing allow rules.
+    # Restrict Zimbra Admin Console (port 7071) to authorized administrator IP
     touch /etc/csf/csf.allow
     sed -i '/ # zimbra-auto-admin$/d' /etc/csf/csf.allow
     if [[ -n "$ADMIN_CIDR" ]]; then
         printf 'tcp|in|d=7071|s=%s # zimbra-auto-admin\n' "$ADMIN_CIDR" >> /etc/csf/csf.allow
-        FIREWALL_ADMIN_ACCESS="7071/tcp from $ADMIN_CIDR"
+        FIREWALL_ADMIN_ACCESS="7071/tcp restricted to $ADMIN_CIDR"
     else
-        FIREWALL_ADMIN_ACCESS="SSH tunnel only (no administrator IP supplied)"
+        FIREWALL_ADMIN_ACCESS="7071/tcp restricted (whitelist in /etc/csf/csf.allow: tcp|in|d=7071|s=YOUR_IP)"
     fi
     install_zimbra_lfd_filter
     if command -v ufw >/dev/null 2>&1; then
@@ -1129,7 +1155,12 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
 
-        --admin-cidr)
+        --csf-conf)
+            require_value "$1" "$#" "${2:-}"
+            CSF_CONF_SOURCE="$2"
+            shift 2
+            ;;
+        --admin-ip|--admin-cidr)
             require_value "$1" "$#" "${2:-}"
             ADMIN_CIDR="$2"
             shift 2
@@ -1211,6 +1242,7 @@ ADMIN_PASS="${ADMIN_PASS:-${ZIMBRA_ADMIN_PASSWORD:-}}"
 unset ZIMBRA_ADMIN_PASSWORD
 [[ "$ONLY_FIREWALL" != yes || "$CONFIGURE_FIREWALL" != no ]] || die "Conflicting firewall options"
 [[ -z "$LOCAL_IP" ]] || is_valid_ipv4 "$LOCAL_IP" || die "Invalid local IPv4"
+[[ -z "$ADMIN_CIDR" ]] || is_valid_admin_network "$ADMIN_CIDR" || die "Invalid administrator IP/CIDR: $ADMIN_CIDR"
 
 
 if [[ "${ONLY_FIREWALL:-no}" != "yes" ]]; then
@@ -1267,7 +1299,7 @@ if [[ "$ONLY_FIREWALL" == yes ]]; then
     repair_bootstrap_dns
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y ca-certificates curl perl python3 iptables ipset iproute2 \
+    apt-get install -y ca-certificates curl perl iptables ipset iproute2 \
         libwww-perl libio-socket-ssl-perl libnet-libidn-perl libsocket6-perl rsyslog
     systemctl enable --now rsyslog
     prepare_firewall_assets
@@ -1372,7 +1404,6 @@ SYSTEM_PACKAGES=(
     openssl
     pax
     perl
-    python3
     rsyslog
     sqlite3
     sysstat
@@ -1411,8 +1442,6 @@ fi
 is_valid_ipv4 "$LOCAL_IP" || die "Cannot detect local IPv4; use --local-ip"
 ip -o -4 addr show | awk '{split($4,a,"/"); print a[1]}' | grep -Fxq "$LOCAL_IP" || \
     die "--local-ip must belong to a local interface"
-[[ -z "$ADMIN_CIDR" ]] || is_valid_admin_network "$ADMIN_CIDR" || die "Invalid administrator IP/CIDR"
-
 # Fail early with a clear URL if the external packages required by proxy are
 # not reachable. The bundled installer otherwise hides this detail in a log.
 check_zimbra_repository

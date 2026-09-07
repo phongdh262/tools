@@ -52,7 +52,7 @@ chmod +x install-zimbra10.sh
 sudo ./install-zimbra10.sh --domain example.com
 ```
 
-Nếu không có `csf.conf` cạnh script, script tự tải đúng bản mẫu được cố định theo commit và SHA-256. File mẫu cục bộ phải khớp phiên bản script; nếu sửa file mẫu, kiểm tra lại thay đổi và checksum trong script trước khi sử dụng.
+Đặt file `csf.conf` có sẵn cạnh `install-zimbra10.sh`. Sau khi cài CSF, script kiểm tra rồi dùng toàn bộ file này thay thế `/etc/csf/csf.conf`. Có thể chọn một file ở đường dẫn khác bằng `--csf-conf /duong-dan/csf.conf`. Nếu không có file cục bộ, script tải bản mẫu đã cố định theo commit và SHA-256 từ repository.
 
 Archive lớn được lưu trong **GitHub Releases**, còn checksum được lưu cả trong git và release. Kiểm tra bộ Ubuntu 24.04 tải thủ công:
 
@@ -64,25 +64,17 @@ sha256sum -c zcs-10.1.20_GA_0326.UBUNTU24_64.20260821120929.tgz.sha256
 
 Script cài CSF **15.10** từ Aetherinox khi máy chưa có CSF, xác minh SHA-256 và kiểm tra tương thích trước khi chuyển từ UFW. Nếu CSF đã có sẵn, script giữ bản cài hiện tại; quản trị viên vẫn cần theo dõi bản vá của CSF đang sử dụng. Tự cập nhật CSF qua mạng được tắt trong mẫu để tránh thay đổi phiên bản ngoài kiểm soát.
 
-- Mở công khai TCP `25,80,443,465,587,993,995` và các cổng SSH phát hiện được.
-- Cổng Admin `7071` chỉ mở cho `--admin-cidr`; nếu không truyền, dùng IP của phiên SSH hiện tại khi biến `SSH_CONNECTION` được giữ lại.
-- Nếu không xác định được IP quản trị, dùng SSH tunnel hoặc truyền `--admin-cidr`. Không tự mở Admin cho toàn Internet.
+- Mở công khai TCP `25,80,443,465,587,993,995` và các cổng SSH phát hiện được (bỏ giới hạn IP cho SSH).
+- Cổng Admin `7071` được **giới hạn IP truy cập**: chỉ cho phép IP quản trị qua tùy chọn `--admin-ip IP` (hoặc `--admin-cidr CIDR`). Nếu không truyền, script tự động nhận diện IP từ phiên SSH đang kết nối. Nếu không xác định được IP quản trị, cổng 7071 sẽ không mở công khai mà cần khai báo thủ công trong `/etc/csf/csf.allow` (`tcp|in|d=7071|s=YOUR_IP`).
 - Không mở công khai backend `8443`, FTP, DNS hay cổng giám sát trong danh sách cổng mặc định.
-- Giữ lại các allow rule CSF hiện có ngoài rule quản trị do script tạo. Quản trị viên cần kiểm tra các rule tự cấu hình này nếu muốn siết toàn bộ chính sách truy cập.
+- Giữ lại các rule `csf.allow` và `csf.deny` hiện có ngoài rule quản trị 7071 do script cập nhật.
 - IPv6 được cấu hình tương ứng khi IPv6 đang bật trên máy.
 - Cấu hình và rules cũ được sao lưu tại `/root/zimbra-firewall-backup.*`. Khi lỗi, script khôi phục; watchdog độc lập cũng thực hiện khôi phục nếu giao dịch không hoàn tất trong 10 phút. Các kiểm tra tự động xác minh rules và DNS, không thay thế kiểm tra SSH từ máy bên ngoài.
 
-Ví dụ giới hạn quản trị:
+Ví dụ chỉ định IP quản trị truy cập cổng 7071 và file cấu hình CSF tùy chọn:
 
 ```bash
-sudo ./install-zimbra10.sh --domain example.com --admin-cidr 203.0.113.25/32
-```
-
-Dùng SSH tunnel khi không mở trực tiếp cổng quản trị:
-
-```bash
-ssh -L 17071:127.0.0.1:7071 root@MAIL_SERVER_IP
-# Truy cập https://localhost:17071 trên máy cá nhân
+sudo ./install-zimbra10.sh --domain example.com --admin-ip 203.0.113.25 --csf-conf /root/csf.conf
 ```
 
 ### VPS có NAT và DNS
@@ -91,8 +83,7 @@ ssh -L 17071:127.0.0.1:7071 root@MAIL_SERVER_IP
 sudo ./install-zimbra10.sh \
   --domain example.com \
   --ip 203.0.113.10 \
-  --local-ip 10.0.0.10 \
-  --admin-cidr 203.0.113.25/32
+  --local-ip 10.0.0.10
 ```
 
 `--ip` là IP công khai; `--local-ip` phải có trên interface của VPS và được dùng cho hostname/DNS nội bộ. Nếu không truyền, script tự phát hiện từng địa chỉ.
@@ -110,7 +101,7 @@ sudo ./install-zimbra10.sh --domain example.com \
   --password-file /root/zimbra-admin-password
 
 # Chỉ sửa firewall trên máy đã cài Zimbra; không đổi hostname/múi giờ.
-sudo ./install-zimbra10.sh --only-firewall --admin-cidr 203.0.113.25/32
+sudo ./install-zimbra10.sh --only-firewall --admin-ip 203.0.113.25 --csf-conf /root/csf.conf
 
 # Không cấu hình CSF
 sudo ./install-zimbra10.sh --domain example.com --skip-firewall

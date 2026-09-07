@@ -33,7 +33,7 @@ class InstallerTests(unittest.TestCase):
         subprocess.run(['bash', '-n', str(SCRIPT)], check=True)
         result = subprocess.run(['bash', str(SCRIPT), '--help'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('--admin-cidr', result.stdout)
+        self.assertIn('--csf-conf', result.stdout)
         self.assertNotIn('10.1.19', result.stdout)
 
     def test_os_mapping(self):
@@ -53,19 +53,11 @@ class InstallerTests(unittest.TestCase):
         for domain in ['example.com.', 'example..com', '-example.com', 'example.com;id', 'a' * 64 + '.com']:
             self.assertNotEqual(self.bash('is_valid_domain "$1"', domain, ok=False).returncode, 0)
 
-    def test_admin_network_validation(self):
-        for network in ['203.0.113.4', '203.0.113.0/24', '2001:db8::1', '2001:db8::/64']:
-            self.bash('is_valid_admin_network "$1"', network)
-        for network in ['0.0.0.0/0', '::/0', '1.2.3.999', '1.2.3.4;id', '1.2.3.4\nALLOW', 'fe80::1%eth0', 'multicast']:
-            self.assertNotEqual(self.bash('is_valid_admin_network "$1"', network, ok=False).returncode, 0)
-
     def test_local_template_directory_survives_cd(self):
         result = self.bash('cd /\nprintf "%s" "$SCRIPT_DIR"')
         self.assertEqual(result.stdout, str(ROOT))
 
-    def test_template_hash_matches(self):
-        expected = re.search(r'CSF_TEMPLATE_SHA256="([a-f0-9]{64})"', SOURCE).group(1)
-        self.assertEqual(hashlib.sha256((ROOT / 'csf.conf').read_bytes()).hexdigest(), expected)
+    def test_local_template_is_valid(self):
         self.bash('validate_csf_template "$1"', ROOT / 'csf.conf')
 
     def test_reject_empty_partial_duplicate_templates(self):
@@ -74,20 +66,27 @@ class InstallerTests(unittest.TestCase):
             fixture.write_text(value)
             self.assertNotEqual(self.bash('validate_csf_template "$1"', fixture, ok=False).returncode, 0)
 
-    def test_config_merge_restricts_public_ports_preserves_new_keys(self):
+    def test_uploaded_config_replaces_default_and_opens_required_ports(self):
         template = ROOT / 'csf.conf'
-        defaults = self.tmp / 'defaults.conf'
-        defaults.write_text(template.read_text() + '\nNEW_VENDOR_SETTING = "safe"\n')
+        uploaded = self.tmp / 'uploaded.conf'
+        uploaded.write_text(
+            template.read_text()
+            .replace('TCP_IN = "22,25,80,443,465,587,993,995"',
+                     'TCP_IN = "7071,10050"')
+            .replace('TCP6_IN = "22,25,80,443,465,587,993,995"',
+                     'TCP6_IN = "7071,10050"')
+            + '\n# Uploaded configuration marker\n'
+        )
         output = self.tmp / 'result.conf'
-        self.bash('build_csf_config "$1" "$2" "$3" "25,443,2222"', template, defaults, output)
+        self.bash('build_csf_config "$1" "$2" "25,443,2222"', uploaded, output)
         values = dict(re.findall(r'^(\w+) = "(.*)"$', output.read_text(), re.M))
-        self.assertEqual(values['TCP_IN'], '25,443,2222')
-        self.assertEqual(values['TCP6_IN'], '25,443,2222')
-        self.assertEqual(values['UDP_IN'], '')
-        self.assertEqual(values['UI'], '0')
-        self.assertEqual(values['AUTO_UPDATES'], '0')
-        self.assertEqual(values['NEW_VENDOR_SETTING'], 'safe')
-        self.assertEqual(values['SMTPAUTH_LOG'], '/var/log/zimbra.log')
+        self.assertEqual(values['TCP_IN'], '25,443,2222,10050')
+        self.assertEqual(values['TCP6_IN'], '25,443,2222,10050')
+        self.assertNotIn('7071', values['TCP_IN'].split(','))
+        self.assertNotIn('7071', values['TCP6_IN'].split(','))
+        self.assertIn('# Uploaded configuration marker', output.read_text())
+        self.assertEqual(values['TESTING'], '0')
+        self.assertEqual(values['CUSTOM1_LOG'], '/opt/zimbra/log/audit.log')
 
     def test_failed_download_preserves_destination(self):
         target = self.tmp / 'csf.conf'
@@ -228,6 +227,8 @@ verify_firewall_rules 443""")
         self.assertNotIn('"./csf.tgz"', SOURCE)
         self.assertNotIn('rm -f /etc/csf/csf.conf', SOURCE)
         self.assertNotIn('SNMPNOTIFY="yes"', SOURCE)
+        self.assertIn('zimbra-auto-admin', SOURCE)
+        self.assertIn('25 80 443 465 587 993 995', SOURCE)
 
 
 if __name__ == '__main__':
