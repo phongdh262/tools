@@ -521,16 +521,21 @@ read_admin_password_file() {
 }
 
 check_fqdn_dns_safety() {
-    local addresses
+    local addresses=""
+    local resolver record_type response
 
-    addresses=$(
-        {
-            timeout 10 getent ahostsv4 "$FQDN" 2>/dev/null || true
-            timeout 10 getent ahostsv6 "$FQDN" 2>/dev/null || true
-        } | awk '{print $1}' | sort -u
-    )
+    # Query public DNS directly. getent also reads /etc/hosts, where Ubuntu may
+    # legitimately map the current hostname to 127.0.1.1 before this installer
+    # replaces that temporary mapping with LOCAL_IP.
+    for resolver in 1.1.1.1 8.8.8.8; do
+        for record_type in A AAAA; do
+            response=$(dig "@$resolver" +short +time=3 +tries=1 \
+                "$FQDN" "$record_type" 2>/dev/null || true)
+            [[ -z "$response" ]] || addresses+=$'\n'"$response"
+        done
+    done
     if grep -Eq '^(127\.|0\.0\.0\.0$|::1$|::$)' <<< "$addresses"; then
-        die "FQDN $FQDN resolves to a loopback or unspecified address"
+        die "Public DNS for $FQDN resolves to a loopback or unspecified address"
     fi
 }
 

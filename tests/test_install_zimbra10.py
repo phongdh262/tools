@@ -67,6 +67,19 @@ class InstallerTests(unittest.TestCase):
                 self.bash(setup + 'validate_admin_password "$1"', password, ok=False).returncode,
                 0)
 
+    def test_fqdn_dns_safety_ignores_local_hosts_but_rejects_public_loopback(self):
+        safe = '''FQDN=mail.example.com
+getent() { printf '%s\n' '127.0.1.1 STREAM mail.example.com'; }
+dig() { printf '%s\n' '203.0.113.10'; }
+check_fqdn_dns_safety'''
+        self.bash(safe)
+
+        for address in ['127.0.0.1', '127.0.1.1', '0.0.0.0', '::1', '::']:
+            unsafe = f'''FQDN=mail.example.com
+dig() {{ printf '%s\\n' '{address}'; }}
+check_fqdn_dns_safety'''
+            self.assertNotEqual(self.bash(unsafe, ok=False).returncode, 0)
+
     def test_password_file_must_be_private_regular_file(self):
         password_file = self.tmp / 'admin-password'
         password_file.write_text('correct horse battery staple\n')
