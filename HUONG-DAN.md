@@ -93,9 +93,9 @@ sudo ./install-zimbra10.sh \
 
 `--ip` là IP công khai; `--local-ip` phải có trên interface của VPS và được dùng cho hostname/DNS nội bộ. Nếu không truyền, script tự phát hiện từng địa chỉ.
 
-DNS nội bộ chỉ khai báo hostname mail và MX cục bộ, tiếp tục phân giải SPF/DKIM/DMARC và các tên miền con từ DNS công khai. Domain chưa có A/AAAA, đang trỏ sang IP khác hoặc PTR chưa khớp chỉ tạo cảnh báo và không chặn cài đặt. Bạn vẫn phải tạo A/MX/SPF/DKIM/DMARC tại DNS provider, đặt PTR/rDNS tại nhà cung cấp VPS và cấu hình port forwarding/cloud firewall nếu có NAT. Bộ cài hiển thị bản ghi DKIM sau khi hoàn thành.
+DNS nội bộ chỉ khai báo hostname mail và MX cục bộ, tiếp tục phân giải SPF/DKIM/DMARC và các tên miền con từ DNS công khai. Bạn vẫn phải tạo A/MX/SPF/DKIM/DMARC tại DNS provider, đặt PTR/rDNS tại nhà cung cấp VPS và cấu hình port forwarding/cloud firewall nếu có NAT. Bộ cài hiển thị bản ghi DKIM sau khi hoàn thành.
 
-Resolver được kiểm tra trước APT, sao lưu trước khi thay đổi, kiểm tra cấu hình dnsmasq trước khi chuyển, và khôi phục cùng hostname/`/etc/hosts` nếu Zimbra chưa cấu hình thành công. Bản sao nằm tại `/root/zimbra-resolver-backup.*` và `/root/zimbra-host-backup.*`; đường dẫn cụ thể được ghi trong kết quả cài đặt.
+Resolver được kiểm tra trước APT, sao lưu trước khi thay đổi, kiểm tra cấu hình dnsmasq trước khi chuyển, và khôi phục nếu chuyển resolver thất bại. Bản sao nằm tại `/root/zimbra-resolver-backup.*`.
 
 ### Các tùy chọn khác
 
@@ -118,14 +118,12 @@ sudo ./install-zimbra10.sh --domain example.com \
 ./install-zimbra10.sh --help
 ```
 
-Mật khẩu do kỹ thuật viên cung cấp phải dài 14-256 ký tự, không chứa ký tự điều khiển và không được trùng domain, FQDN hoặc địa chỉ admin. File mật khẩu phải là file thường, không phải symlink, và không cấp quyền cho group/other.
-
 LFD theo dõi SMTP AUTH tại `/var/log/zimbra.log` và các đăng nhập Zimbra thất bại có IP hợp lệ tại `/opt/zimbra/log/audit.log`. Quy tắc Zimbra chặn tạm 300 giây sau 5 lần thất bại; không tin địa chỉ forwarded do client cung cấp và không chặn loopback. Với proxy bên ngoài, cần kiểm tra địa chỉ ghi trong log và cấu hình trust riêng trước khi dựa vào LFD. Kiểm tra thực tế đăng nhập sai, log `/var/log/lfd.log`, và cơ chế mở khóa từ console của VPS.
 
 ### Kết quả và xử lý lỗi
 
 - Mật khẩu được lưu trong `/root/ZIMBRA-INSTALL-INFO.txt`, quyền `600`; phần tổng kết thông thường không in mật khẩu vào log.
-- Các file cấu hình tạm chứa mật khẩu LDAP/keystore dùng tên ngẫu nhiên, quyền `600`, và được tự xóa khi hoàn thành hoặc khi script thoát do lỗi. Mailbox keystore dùng mật khẩu ngẫu nhiên riêng; Java truststore giữ mật khẩu tương thích với kho `cacerts` do Zimbra cung cấp. Chỉ mật khẩu admin được giữ lại trong file kết quả.
+- `/root/zimbra-setup.conf` cũng chứa thông tin nhạy cảm, quyền `600`; bảo vệ cả hai file và backup của chúng.
 - Log cài đặt: `/root/zimbra-auto-install.log`. Không chia sẻ file cấu hình/mật khẩu cùng log hỗ trợ.
 - SNMP notifications mặc định tắt. Kiểm tra phiên bản dịch vụ sau khi cài; không báo thành công nếu dịch vụ dừng hoặc phiên bản khác archive đã chọn.
 - Hai lần chạy đồng thời bị chặn bằng khóa tiến trình.
