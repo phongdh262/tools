@@ -902,6 +902,20 @@ fi
 [[ "$ADMIN_PASS" != *$'\n'* && "$ADMIN_PASS" != *$'\r'* ]] || \
     die "Admin password must be a single line"
 
+# A previous failed run may have left resolv.conf pointing at a local dnsmasq
+# that is no longer running, which would block all outbound DNS lookups.
+# Detect and repair this condition before reaching the repository check.
+if grep -q '^nameserver 127\.0\.0\.1$' /etc/resolv.conf 2>/dev/null; then
+    if ! dig +short +time=2 +tries=1 repo.zimbra.com @127.0.0.1 >/dev/null 2>&1; then
+        echo "WARNING: resolv.conf points to 127.0.0.1 but local DNS is not working."
+        echo "         Temporarily restoring public DNS for package downloads."
+        chattr -i /etc/resolv.conf 2>/dev/null || true
+        printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+        systemctl stop dnsmasq 2>/dev/null || true
+        rm -f /etc/dnsmasq.d/zimbra.conf
+    fi
+fi
+
 # Fail early with a clear URL if the external packages required by proxy are
 # not reachable. The bundled installer otherwise hides this detail in a log.
 check_zimbra_repository
@@ -928,17 +942,23 @@ hostnamectl set-hostname "$FQDN"
 # Keep one deterministic mapping for this server and retain a recoverable backup.
 cp -a /etc/hosts "/etc/hosts.pre-zimbra.$(date +%Y%m%d%H%M%S)"
 HOSTS_TMP=$(mktemp /etc/.hosts.zimbra.XXXXXX)
-awk -v fqdn="$FQDN" -v server_ip="$SERVER_IP" '
+awk -v fqdn="$FQDN" -v short="$MAIL_HOST" -v server_ip="$SERVER_IP" '
     {
-        drop = ($1 == "127.0.1.1" || $1 == server_ip)
+        # Drop lines whose IP is 127.0.1.1 or the target server IP entirely.
+        if ($1 == "127.0.1.1" || $1 == server_ip) { next }
+
+        # For any other line (including 127.0.0.1), strip the FQDN and short
+        # hostname so dnsmasq will not shadow the address= directive.
+        output = $1
+        has_others = 0
         for (i = 2; i <= NF; i++) {
-            if ($i == fqdn) {
-                drop = 1
+            if ($i != fqdn && $i != short) {
+                output = output " " $i
+                has_others = 1
             }
         }
-        if (!drop) {
-            print
-        }
+        # Keep the line only if it still has at least one hostname after cleanup.
+        if (has_others) { print output }
     }
 ' /etc/hosts > "$HOSTS_TMP"
 install -m 644 "$HOSTS_TMP" /etc/hosts
