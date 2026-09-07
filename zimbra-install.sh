@@ -58,6 +58,7 @@ MAIL_HOST="mail"
 TIMEZONE="Asia/Ho_Chi_Minh"
 CONFIGURE_FIREWALL="yes"
 SSH_PORT=""
+SSH_PORT_TARGET="2210"
 FIREWALL_STATUS="not configured"
 FIREWALL_ADMIN_ACCESS="not configured"
 FIREWALL_RULES="not configured"
@@ -100,6 +101,7 @@ Optional:
   --only-firewall           Only configure CSF firewall (useful when Zimbra is already installed)
   --mail-host NAME          Hostname prefix (default: mail)
   --timezone ZONE           Timezone (default: Asia/Ho_Chi_Minh)
+  --ssh-port PORT           SSH port to configure (default: 2210)
   --installer PATH_OR_URL   Local archive or download URL
   --sha256 HASH             Expected SHA-256 for the archive
   -h, --help                Show this help
@@ -354,17 +356,72 @@ is_valid_admin_network() {
 detect_ssh_port() {
     local candidate=""
 
-    if [[ -n "${SSH_CONNECTION:-}" ]]; then
+    if [[ -n "${SSH_PORT_TARGET:-}" ]]; then
+        candidate="$SSH_PORT_TARGET"
+    elif command -v sshd >/dev/null 2>&1; then
+        candidate=$(sshd -T 2>/dev/null | awk '$1 == "port" {print $2; exit}')
+    elif [[ -n "${SSH_CONNECTION:-}" ]]; then
         candidate=$(awk '{print $4}' <<< "$SSH_CONNECTION")
     elif [[ -n "${SSH_CLIENT:-}" ]]; then
         candidate=$(awk '{print $3}' <<< "$SSH_CLIENT")
-    elif command -v sshd >/dev/null 2>&1; then
-        candidate=$(sshd -T 2>/dev/null | awk '$1 == "port" {print $2; exit}')
     fi
 
     [[ "$candidate" =~ ^[0-9]{1,5}$ ]] || candidate="22"
     (( 10#$candidate >= 1 && 10#$candidate <= 65535 )) || candidate="22"
     printf '%s' "$candidate"
+}
+
+configure_ssh_port() {
+    local target_port="${1:-2210}"
+    log "Configure SSH service on port $target_port"
+
+    # 1. Update / create sshd configuration drop-in file (supported on Ubuntu 22.04 & 24.04)
+    mkdir -p /etc/ssh/sshd_config.d
+    cat > /etc/ssh/sshd_config.d/50-zimbra-ssh-port.conf <<EOF
+# Configured by zimbra-install.sh
+Port $target_port
+EOF
+    chmod 644 /etc/ssh/sshd_config.d/50-zimbra-ssh-port.conf
+
+    # Ensure /etc/ssh/sshd_config doesn't override with a hardcoded old Port if sshd_config.d is not included
+    if [[ -f /etc/ssh/sshd_config ]]; then
+        if ! grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' /etc/ssh/sshd_config; then
+            if grep -Eq '^[[:space:]]*Port[[:space:]]+' /etc/ssh/sshd_config; then
+                sed -i -E "s/^[[:space:]]*Port[[:space:]]+[0-9]+/Port $target_port/" /etc/ssh/sshd_config
+            else
+                printf '\n# Configured by zimbra-install.sh\nPort %s\n' "$target_port" >> /etc/ssh/sshd_config
+            fi
+        fi
+    fi
+
+    # 2. Ubuntu 24.04 LTS: OpenSSH uses systemd socket activation (ssh.socket) by default
+    # If ssh.socket is active, enabled, or installed, apply systemd socket drop-in override
+    if systemctl is-active --quiet ssh.socket 2>/dev/null || \
+       systemctl is-enabled --quiet ssh.socket 2>/dev/null || \
+       [[ -f /lib/systemd/system/ssh.socket || -f /usr/lib/systemd/system/ssh.socket ]]; then
+        mkdir -p /etc/systemd/system/ssh.socket.d
+        cat > /etc/systemd/system/ssh.socket.d/listen.conf <<EOF
+[Socket]
+ListenStream=
+ListenStream=$target_port
+EOF
+        chmod 644 /etc/systemd/system/ssh.socket.d/listen.conf
+        systemctl daemon-reload 2>/dev/null || true
+        systemctl restart ssh.socket 2>/dev/null || true
+    fi
+
+    # 3. Ubuntu 22.04 LTS (and systems running standalone ssh service):
+    # Restart the ssh daemon service
+    if systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null; then
+        systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+    fi
+
+    # 4. Verify sshd syntax
+    if command -v sshd >/dev/null 2>&1; then
+        sshd -t 2>/dev/null || warn "sshd -t reported warnings for SSH configuration"
+    fi
+
+    echo "SSH service configured on port: $target_port"
 }
 
 detect_ubuntu_version() {
@@ -1243,6 +1300,12 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
 
+        --ssh-port)
+            require_value "$1" "$#" "${2:-}"
+            SSH_PORT_TARGET="$2"
+            shift 2
+            ;;
+
         --skip-firewall)
             CONFIGURE_FIREWALL="no"
             shift
@@ -1269,6 +1332,8 @@ DOMAIN="${DOMAIN,,}"
 MAIL_HOST="${MAIL_HOST,,}"
 ADMIN_PASS="${ADMIN_PASS:-${ZIMBRA_ADMIN_PASSWORD:-}}"
 unset ZIMBRA_ADMIN_PASSWORD
+[[ "$SSH_PORT_TARGET" =~ ^[0-9]+$ ]] && (( SSH_PORT_TARGET >= 1 && SSH_PORT_TARGET <= 65535 )) || \
+    die "Invalid SSH port: $SSH_PORT_TARGET (must be between 1 and 65535)"
 [[ "$ONLY_FIREWALL" != yes || "$CONFIGURE_FIREWALL" != no ]] || die "Conflicting firewall options"
 [[ -z "$LOCAL_IP" ]] || is_valid_ipv4 "$LOCAL_IP" || die "Invalid local IPv4"
 [[ -z "$ADMIN_CIDR" ]] || is_valid_admin_network "$ADMIN_CIDR" || die "Invalid administrator IP/CIDR: $ADMIN_CIDR"
@@ -1331,6 +1396,7 @@ if [[ "$ONLY_FIREWALL" == yes ]]; then
     apt-get install -y ca-certificates curl perl iptables ipset iproute2 \
         libwww-perl libio-socket-ssl-perl libnet-libidn-perl libsocket6-perl rsyslog
     systemctl enable --now rsyslog
+    configure_ssh_port "$SSH_PORT_TARGET"
     prepare_firewall_assets
     configure_csf
     RESOLVER_PENDING=no
@@ -1446,6 +1512,7 @@ apt-get install -y "${SYSTEM_PACKAGES[@]}"
 systemctl enable --now chrony
 chronyc -a makestep 2>/dev/null || true
 systemctl enable --now rsyslog
+configure_ssh_port "$SSH_PORT_TARGET"
 
 # Detect values only after curl and OpenSSL are guaranteed to be installed.
 if [[ -z "$SERVER_IP" ]]; then

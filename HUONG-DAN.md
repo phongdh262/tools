@@ -108,6 +108,9 @@ sudo ./zimbra-install.sh --domain example.com \
 # Chỉ sửa firewall trên máy đã cài Zimbra; không đổi hostname/múi giờ.
 sudo ./zimbra-install.sh --only-firewall --admin-ip 203.0.113.25 --csf-conf /root/csf.conf
 
+# Tùy chọn đổi cổng SSH khác (mặc định script cấu hình cổng 2210 cho cả Ubuntu 22 và 24)
+sudo ./zimbra-install.sh --domain example.com --ssh-port 2210
+
 # Không cấu hình CSF
 sudo ./zimbra-install.sh --domain example.com --skip-firewall
 

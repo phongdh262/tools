@@ -34,6 +34,7 @@ class InstallerTests(unittest.TestCase):
         result = subprocess.run(['bash', str(SCRIPT), '--help'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('--csf-conf', result.stdout)
+        self.assertIn('--ssh-port', result.stdout)
         self.assertNotIn('10.1.19', result.stdout)
 
     def test_os_mapping(self):
@@ -244,6 +245,28 @@ verify_firewall_rules 443""")
         expected_hash = hashlib.sha256((ROOT / 'csf.conf').read_bytes()).hexdigest()
         self.assertIn(f'CSF_TEMPLATE_SHA256="{expected_hash}"', SOURCE)
         self.assertIn('rm -f /etc/csf/csf.conf', SOURCE)
+
+    def test_configure_ssh_port_ubuntu22_and_24(self):
+        fs = self.tmp / 'fs'
+        (fs / 'etc/ssh').mkdir(parents=True, exist_ok=True)
+        (fs / 'etc/systemd/system').mkdir(parents=True, exist_ok=True)
+        (fs / 'usr/lib/systemd/system').mkdir(parents=True, exist_ok=True)
+        (fs / 'usr/lib/systemd/system/ssh.socket').touch()
+        func = re.search(r'^configure_ssh_port\(\) \{.*?^\}', SOURCE, re.M | re.S).group()
+        func = func.replace('/etc/ssh', str(fs / 'etc/ssh'))
+        func = func.replace('/etc/systemd', str(fs / 'etc/systemd'))
+        func = func.replace('/usr/lib/systemd', str(fs / 'usr/lib/systemd'))
+        func = func.replace('/lib/systemd', str(fs / 'usr/lib/systemd'))
+        self.bash("""
+systemctl() { return 0; }
+sshd() { return 0; }
+""" + func + "\nconfigure_ssh_port 2210")
+        conf_dropin = fs / 'etc/ssh/sshd_config.d/50-zimbra-ssh-port.conf'
+        self.assertTrue(conf_dropin.exists())
+        self.assertIn('Port 2210', conf_dropin.read_text())
+        socket_dropin = fs / 'etc/systemd/system/ssh.socket.d/listen.conf'
+        self.assertTrue(socket_dropin.exists())
+        self.assertIn('ListenStream=2210', socket_dropin.read_text())
 
 
 if __name__ == '__main__':
