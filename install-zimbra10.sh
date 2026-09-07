@@ -1018,10 +1018,6 @@ SYSTEM_PACKAGES=(
     wget
 )
 
-if [[ "$VERSION_ID" == "22.04" ]]; then
-    SYSTEM_PACKAGES+=(resolvconf)
-fi
-
 apt-get install -y "${SYSTEM_PACKAGES[@]}"
 
 systemctl enable --now chrony
@@ -1044,17 +1040,15 @@ fi
     die "Admin password must be a single line"
 
 # A previous failed run may have left resolv.conf pointing at a local dnsmasq
-# that is no longer running, which would block all outbound DNS lookups.
+# that is no longer running or unable to resolve outbound domains.
 # Detect and repair this condition before reaching the repository check.
-if grep -q '^nameserver 127\.0\.0\.1$' /etc/resolv.conf 2>/dev/null; then
-    if ! dig +short +time=2 +tries=1 repo.zimbra.com @127.0.0.1 >/dev/null 2>&1; then
-        echo "WARNING: resolv.conf points to 127.0.0.1 but local DNS is not working."
-        echo "         Temporarily restoring public DNS for package downloads."
-        chattr -i /etc/resolv.conf 2>/dev/null || true
-        printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
-        systemctl stop dnsmasq 2>/dev/null || true
-        rm -f /etc/dnsmasq.d/zimbra.conf
-    fi
+if ! dig +short +time=3 +tries=2 repo.zimbra.com >/dev/null 2>&1; then
+    echo "WARNING: Outbound DNS resolution is failing for repo.zimbra.com."
+    echo "         Temporarily restoring public DNS (1.1.1.1, 8.8.8.8) for package downloads."
+    chattr -i /etc/resolv.conf 2>/dev/null || true
+    printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+    systemctl stop dnsmasq 2>/dev/null || true
+    rm -f /etc/dnsmasq.d/zimbra.conf
 fi
 
 # Fail early with a clear URL if the external packages required by proxy are
@@ -1148,6 +1142,7 @@ apt-get purge -y \
     apache2 \
     apache2-bin \
     apache2-data \
+    resolvconf \
     2>/dev/null || true
 
 # ------------------------------------------------------------
@@ -1166,43 +1161,46 @@ BACKUP_SUFFIX="pre-zimbra.$(date +%Y%m%d%H%M%S)"
 cat > /etc/dnsmasq.d/zimbra.conf <<EOF
 listen-address=127.0.0.1
 bind-interfaces
+domain-needed
+bogus-priv
+no-hosts
+no-resolv
+local=/${DOMAIN}/
 
 server=1.1.1.1
 server=8.8.8.8
 
 address=/${FQDN}/${SERVER_IP}
+address=/localhost/127.0.0.1
 mx-host=${DOMAIN},${FQDN},10
 EOF
 
-if [[ "$VERSION_ID" == "22.04" ]]; then
-    # Put localhost DNS first via resolvconf
-    mkdir -p /etc/resolvconf/resolv.conf.d
+# Disable systemd-resolved and resolvconf on both Ubuntu 22.04 and 24.04.
+# systemd-resolved occupies port 53 on 127.0.0.53, synthesizes local hostname lookups,
+# and conflicts with dnsmasq listening on 127.0.0.1:53.
+systemctl disable --now systemd-resolved 2>/dev/null || true
+systemctl stop systemd-resolved 2>/dev/null || true
+systemctl mask systemd-resolved 2>/dev/null || true
+systemctl disable --now resolvconf 2>/dev/null || true
+systemctl stop resolvconf 2>/dev/null || true
 
-    [[ ! -e /etc/resolvconf/resolv.conf.d/head ]] || \
-        cp -a /etc/resolvconf/resolv.conf.d/head \
-            "/etc/resolvconf/resolv.conf.d/head.${BACKUP_SUFFIX}"
+chattr -i /etc/resolv.conf 2>/dev/null || true
+rm -f /etc/resolv.conf
 
-    cat > /etc/resolvconf/resolv.conf.d/head <<EOF
+cat > /etc/resolv.conf <<EOF
 nameserver 127.0.0.1
 EOF
 
-    resolvconf -u || true
-else
-    # Put localhost DNS first by disabling systemd-resolved and writing
-    # /etc/resolv.conf directly. Ubuntu 24.04 no longer ships resolvconf;
-    # systemd-resolved occupies port 53 on 127.0.0.53 which conflicts with
-    # dnsmasq listening on 127.0.0.1:53.
-    systemctl disable --now systemd-resolved 2>/dev/null || true
+systemctl unmask dnsmasq 2>/dev/null || true
+systemctl enable dnsmasq 2>/dev/null || true
+systemctl restart dnsmasq
+sleep 1
 
-    chattr -i /etc/resolv.conf 2>/dev/null || true
-    rm -f /etc/resolv.conf
-
-    cat > /etc/resolv.conf <<EOF
-nameserver 127.0.0.1
-EOF
+if ! systemctl is-active --quiet dnsmasq; then
+    echo "ERROR: dnsmasq failed to start. Service status:"
+    systemctl status dnsmasq --no-pager || true
+    die "dnsmasq service failed to start"
 fi
-
-systemctl enable --now dnsmasq
 
 # ------------------------------------------------------------
 # DNS validation
@@ -1210,22 +1208,39 @@ systemctl enable --now dnsmasq
 
 log "Validate DNS"
 
-echo "A:"
+echo "Current /etc/resolv.conf:"
+cat /etc/resolv.conf
+echo
+
+echo "A (dig +short $FQDN):"
 dig +short "$FQDN"
 
 echo
-echo "MX:"
+echo "MX (dig +short MX $DOMAIN):"
 dig +short MX "$DOMAIN"
+echo
 
 A_RESULT=$(dig +short "$FQDN" | tail -1)
 
-[[ "$A_RESULT" == "$SERVER_IP" ]] || \
+[[ "$A_RESULT" == "$SERVER_IP" ]] || {
+    echo "Diagnostic information:"
+    echo "Testing direct query to 127.0.0.1:"
+    dig +short @127.0.0.1 "$FQDN" || true
+    echo "dnsmasq service status:"
+    systemctl status dnsmasq --no-pager || true
+    echo "/etc/dnsmasq.d/zimbra.conf content:"
+    cat /etc/dnsmasq.d/zimbra.conf || true
     die "A resolution failed: expected $SERVER_IP got $A_RESULT"
+}
 
 MX_RESULT=$(dig +short MX "$DOMAIN")
 
-grep -qi "$FQDN" <<< "$MX_RESULT" || \
+grep -qi "$FQDN" <<< "$MX_RESULT" || {
+    echo "Diagnostic information:"
+    echo "Testing direct MX query to 127.0.0.1:"
+    dig +short MX @127.0.0.1 "$DOMAIN" || true
     die "MX resolution failed"
+}
 
 # ------------------------------------------------------------
 # Check ports
