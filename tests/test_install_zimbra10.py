@@ -53,6 +53,35 @@ class InstallerTests(unittest.TestCase):
         for domain in ['example.com.', 'example..com', '-example.com', 'example.com;id', 'a' * 64 + '.com']:
             self.assertNotEqual(self.bash('is_valid_domain "$1"', domain, ok=False).returncode, 0)
 
+    def test_fqdn_and_admin_password_validation(self):
+        self.bash('validate_fqdn "$1"', 'mail.example.com')
+        for fqdn in ['localhost', 'mail.localhost', 'bad_name.example.com',
+                     'mail.' + ('a' * 249) + '.com']:
+            self.assertNotEqual(self.bash('validate_fqdn "$1"', fqdn, ok=False).returncode, 0)
+
+        setup = 'DOMAIN=example.com; FQDN=mail.example.com; ADMIN_EMAIL=admin@example.com\n'
+        self.bash(setup + 'validate_admin_password "$1"', 'correct horse battery staple')
+        for password in ['short', 'example.com', 'MAIL.EXAMPLE.COM',
+                         'admin@example.com', 'valid-length-but\ttab']:
+            self.assertNotEqual(
+                self.bash(setup + 'validate_admin_password "$1"', password, ok=False).returncode,
+                0)
+
+    def test_password_file_must_be_private_regular_file(self):
+        password_file = self.tmp / 'admin-password'
+        password_file.write_text('correct horse battery staple\n')
+        password_file.chmod(0o600)
+        result = self.bash('read_admin_password_file "$1"\nprintf %s "$ADMIN_PASS"', password_file)
+        self.assertEqual(result.stdout, 'correct horse battery staple')
+
+        password_file.chmod(0o644)
+        self.assertNotEqual(
+            self.bash('read_admin_password_file "$1"', password_file, ok=False).returncode, 0)
+        password_file.chmod(0o600)
+        link = self.tmp / 'password-link'
+        link.symlink_to(password_file)
+        self.assertNotEqual(self.bash('read_admin_password_file "$1"', link, ok=False).returncode, 0)
+
     def test_local_template_directory_survives_cd(self):
         result = self.bash('cd /\nprintf "%s" "$SCRIPT_DIR"')
         self.assertEqual(result.stdout, str(ROOT))
@@ -231,7 +260,8 @@ verify_firewall_rules 443""")
     def test_no_untrusted_csf_cache(self):
         self.assertNotIn('"/tmp/csf.tgz"', SOURCE)
         self.assertNotIn('"./csf.tgz"', SOURCE)
-        self.assertIn('rm -f /etc/csf/csf.conf', SOURCE)
+        self.assertIn('install -m 600 "$CSF_TEMPLATE" /etc/csf/csf.conf', SOURCE)
+        self.assertNotIn('curl -fsSL "$CSF_TEMPLATE_URL"', SOURCE)
         self.assertNotIn('SNMPNOTIFY="yes"', SOURCE)
         self.assertIn('zimbra-auto-admin', SOURCE)
         self.assertIn('25 80 443 465 587 993 995', SOURCE)
@@ -241,7 +271,26 @@ verify_firewall_rules 443""")
         self.assertIn(f'CSF_TEMPLATE_URL="{expected_url}"', SOURCE)
         expected_hash = hashlib.sha256((ROOT / 'csf.conf').read_bytes()).hexdigest()
         self.assertIn(f'CSF_TEMPLATE_SHA256="{expected_hash}"', SOURCE)
-        self.assertIn('rm -f /etc/csf/csf.conf', SOURCE)
+        self.assertIn('RESTRICT_SYSLOG = "3"', (ROOT / 'csf.conf').read_text())
+
+    def test_secret_files_are_ephemeral_and_passwords_are_separate(self):
+        self.assertNotIn('CONFIG_FILE="/root/zimbra-setup.conf"', SOURCE)
+        self.assertNotIn('SOFTWARE_CONFIG_FILE="/root/zimbra-software-install.conf"', SOURCE)
+        self.assertIn('CONFIG_FILE=$(mktemp /root/zimbra-setup.XXXXXX)', SOURCE)
+        self.assertIn('rm -f -- "$CONFIG_FILE"', SOURCE)
+        self.assertIn('MAILBOXD_KEYSTORE_PASS=$(openssl rand -hex 20)', SOURCE)
+        self.assertIn('MAILBOXD_TRUSTSTORE_PASS=$(openssl rand -hex 20)', SOURCE)
+        self.assertNotIn('mailboxd_truststore_password="changeit"', SOURCE)
+        self.assertIn('clear_internal_secrets', SOURCE)
+
+    def test_host_and_resolver_commit_only_after_zimbra_verification(self):
+        self.assertLess(SOURCE.index('snapshot_host_config\nhostnamectl set-hostname'),
+                        SOURCE.index('snapshot_resolver\n\nBACKUP_SUFFIX'))
+        verification = SOURCE.index('die "At least one Zimbra service is not running"')
+        commit = SOURCE.index('commit_host_network_config', verification)
+        dkim = SOURCE.index('log "DKIM"')
+        self.assertLess(verification, commit)
+        self.assertLess(commit, dkim)
 
 
 if __name__ == '__main__':

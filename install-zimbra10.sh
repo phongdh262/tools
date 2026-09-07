@@ -26,7 +26,7 @@ readonly CSF_VERSION="15.10"
 readonly CSF_URL="https://raw.githubusercontent.com/phongdh262/tools/main/csf.tgz"
 readonly CSF_SHA256="788317da71d31a338da4cff3bdae9471137efc3978436692fe9d005eb70f54b3"
 readonly CSF_TEMPLATE_URL="https://raw.githubusercontent.com/phongdh262/tools/main/csf.conf"
-readonly CSF_TEMPLATE_SHA256="f63eb117d3ba2fb36a9f748368649e0a7e673aedcce5656c2623bf6a99970a00"
+readonly CSF_TEMPLATE_SHA256="783a464ce084d429bffa4affcde646ac57d99f150b6b3c89fe4930470f33995c"
 ADMIN_CIDR=""
 CSF_CONF_SOURCE=""
 LOCAL_IP=""
@@ -37,6 +37,8 @@ FIREWALL_PENDING=no
 FIREWALL_TIMER=""
 RESOLVER_BACKUP=""
 RESOLVER_PENDING=no
+HOST_CONFIG_BACKUP=""
+HOST_CONFIG_PENDING=no
 ONLY_FIREWALL=no
 RESULT_FILE="/root/ZIMBRA-INSTALL-INFO.txt"
 
@@ -54,6 +56,7 @@ ZCS_TGZ=""
 DOMAIN=""
 SERVER_IP=""
 ADMIN_PASS=""
+ADMIN_PASS_SOURCE=""
 MAIL_HOST="mail"
 TIMEZONE="Asia/Ho_Chi_Minh"
 CONFIGURE_FIREWALL="yes"
@@ -66,6 +69,8 @@ SYSTEM_ACCOUNTS_CHANGED="no"
 LOG_FILE="/root/zimbra-auto-install.log"
 DOWNLOAD_DIR="/root/zimbra-downloads"
 WORKDIR=""
+SOFTWARE_CONFIG_FILE=""
+CONFIG_FILE=""
 
 usage() {
     cat <<EOF
@@ -89,6 +94,9 @@ Optional overrides:
   --password PASSWORD       Deprecated: use --password-file to avoid process/history exposure
   --password-file FILE      Read the password from the first line of FILE
   ZIMBRA_ADMIN_PASSWORD     Environment variable password override
+                            Supplied passwords must contain 14-256 characters,
+                            contain no control characters, and not equal the
+                            domain, FQDN, or administrator email address.
 
 Optional:
   --csf-conf FILE           Use this existing csf.conf file after installing CSF
@@ -136,6 +144,8 @@ print_install_summary() {
     summary_section "SYSTEM & OS"
     summary_field "OS" "Ubuntu ${VERSION_ID} (${UBUNTU_CODENAME})"
     summary_field "ZCS Version" "${ZCS_VERSION} GA (${ZCS_BUILD})"
+    summary_field "Host backup" "$HOST_CONFIG_BACKUP"
+    summary_field "Resolver backup" "$RESOLVER_BACKUP"
 
     summary_section "ADMIN LOGIN"
     summary_field "URL" "https://$FQDN:7071"
@@ -460,6 +470,84 @@ is_valid_domain() {
         (( ${#label} <= 63 )) || return 1
         [[ "$label" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$ ]] || return 1
     done
+}
+
+validate_fqdn() {
+    local fqdn="$1"
+    local fqdn_lower
+
+    (( ${#fqdn} <= 253 )) || die "FQDN exceeds 253 characters: $fqdn"
+    is_valid_domain "$fqdn" || die "Invalid FQDN: $fqdn"
+    fqdn_lower=$(printf '%s' "$fqdn" | tr '[:upper:]' '[:lower:]')
+    [[ "$fqdn_lower" != "localhost" && "$fqdn_lower" != *.localhost ]] || \
+        die "FQDN must not use the reserved localhost domain: $fqdn"
+}
+
+validate_admin_password() {
+    local password="$1"
+    local password_lower domain_lower admin_email_lower fqdn_lower
+    local LC_ALL=C
+
+    (( ${#password} >= 14 )) || \
+        die "Admin password must contain at least 14 characters"
+    (( ${#password} <= 256 )) || \
+        die "Admin password must not exceed 256 characters"
+    [[ ! "$password" =~ [[:cntrl:]] ]] || \
+        die "Admin password must not contain control characters"
+
+    password_lower=$(printf '%s' "$password" | tr '[:upper:]' '[:lower:]')
+    domain_lower=$(printf '%s' "$DOMAIN" | tr '[:upper:]' '[:lower:]')
+    admin_email_lower=$(printf '%s' "$ADMIN_EMAIL" | tr '[:upper:]' '[:lower:]')
+    fqdn_lower=$(printf '%s' "$FQDN" | tr '[:upper:]' '[:lower:]')
+    [[ "$password_lower" != "$domain_lower" && \
+       "$password_lower" != "$admin_email_lower" && \
+       "$password_lower" != "$fqdn_lower" ]] || \
+        die "Admin password must not equal the domain, FQDN, or admin address"
+}
+
+read_admin_password_file() {
+    local file="$1"
+    local mode
+
+    [[ -f "$file" && ! -L "$file" && -r "$file" ]] || \
+        die "Password file must be a readable regular file, not a symlink: $file"
+    mode=$(stat -c '%a' "$file" 2>/dev/null || stat -f '%Lp' "$file" 2>/dev/null) || \
+        die "Cannot inspect password file permissions: $file"
+    (( (8#$mode & 077) == 0 )) || \
+        die "Password file must not be accessible by group or other users: $file"
+
+    IFS= read -r ADMIN_PASS < "$file" || true
+    [[ -n "$ADMIN_PASS" ]] || die "Password file is empty: $file"
+}
+
+check_fqdn_dns_safety() {
+    local addresses
+
+    addresses=$(
+        {
+            timeout 10 getent ahostsv4 "$FQDN" 2>/dev/null || true
+            timeout 10 getent ahostsv6 "$FQDN" 2>/dev/null || true
+        } | awk '{print $1}' | sort -u
+    )
+    if grep -Eq '^(127\.|0\.0\.0\.0$|::1$|::$)' <<< "$addresses"; then
+        die "FQDN $FQDN resolves to a loopback or unspecified address"
+    fi
+}
+
+report_ptr_status() {
+    local ptr
+    local fqdn_lower
+
+    ptr=$(dig @1.1.1.1 +short +time=3 +tries=1 -x "$SERVER_IP" 2>/dev/null | \
+        head -1 | sed 's/\.$//' | tr '[:upper:]' '[:lower:]' || true)
+    fqdn_lower=$(printf '%s' "$FQDN" | tr '[:upper:]' '[:lower:]')
+    if [[ -z "$ptr" ]]; then
+        echo "WARNING: No public PTR record found for $SERVER_IP; configure it as $FQDN with the VPS provider."
+    elif [[ "$ptr" != "$fqdn_lower" ]]; then
+        echo "WARNING: PTR for $SERVER_IP is $ptr; recommended value: $FQDN"
+    else
+        echo "PTR record      : $SERVER_IP -> $ptr"
+    fi
 }
 
 escape_config_value() {
@@ -1011,17 +1099,10 @@ configure_csf() {
     fi
     command -v csf >/dev/null || die "CSF installation failed"
 
-    # Sau khi cai xong CSF: xoa file csf.conf mac dinh va tai file csf.conf tren github ve thay the
-    log "Xóa csf.conf mặc định và tải csf.conf từ GitHub về thay thế"
-    rm -f /etc/csf/csf.conf
-    if [[ -n "$CSF_CONF_SOURCE" && -f "$CSF_CONF_SOURCE" ]]; then
-        install -m 600 "$CSF_CONF_SOURCE" /etc/csf/csf.conf
-    else
-        fetch_verified "$CSF_TEMPLATE_URL" "$CSF_TEMPLATE_SHA256" /etc/csf/csf.conf || \
-            curl -fsSL "$CSF_TEMPLATE_URL" -o /etc/csf/csf.conf || \
-            die "Cannot download csf.conf from GitHub: $CSF_TEMPLATE_URL"
-        chmod 600 /etc/csf/csf.conf
-    fi
+    # Apply the single staged copy that prepare_firewall_assets already checked.
+    # This avoids a second download, checksum bypass, and source-file TOCTOU.
+    log "Apply verified CSF configuration"
+    install -m 600 "$CSF_TEMPLATE" /etc/csf/csf.conf
 
     [[ -f /usr/local/csf/bin/csftest.pl ]] || die "CSF compatibility test is missing"
     compatibility=$(perl /usr/local/csf/bin/csftest.pl) || die "CSF compatibility test failed"
@@ -1081,6 +1162,9 @@ snapshot_resolver() {
     [[ -z "$RESOLVER_BACKUP" ]] || return 0
     RESOLVER_BACKUP=$(mktemp -d /root/zimbra-resolver-backup.XXXXXX)
     [[ ! -e /etc/resolv.conf && ! -L /etc/resolv.conf ]] || cp -a /etc/resolv.conf "$RESOLVER_BACKUP/resolv.conf"
+    if lsattr -d /etc/resolv.conf 2>/dev/null | awk 'NR == 1 && $1 ~ /i/ {found=1} END {exit !found}'; then
+        touch "$RESOLVER_BACKUP/resolv.conf.immutable"
+    fi
     [[ ! -f /etc/dnsmasq.d/zimbra.conf ]] || cp -a /etc/dnsmasq.d/zimbra.conf "$RESOLVER_BACKUP/zimbra.conf"
     local service
     for service in systemd-resolved dnsmasq; do
@@ -1097,6 +1181,10 @@ rollback_resolver() {
     rm -f /etc/resolv.conf /etc/dnsmasq.d/zimbra.conf
     [[ ! -e "$RESOLVER_BACKUP/resolv.conf" && ! -L "$RESOLVER_BACKUP/resolv.conf" ]] || \
         cp -a "$RESOLVER_BACKUP/resolv.conf" /etc/resolv.conf
+    if [[ -f "$RESOLVER_BACKUP/resolv.conf.immutable" ]]; then
+        chattr +i /etc/resolv.conf 2>/dev/null || \
+            echo "WARNING: Could not restore the immutable flag on /etc/resolv.conf" >&2
+    fi
     [[ ! -f "$RESOLVER_BACKUP/zimbra.conf" ]] || cp -a "$RESOLVER_BACKUP/zimbra.conf" /etc/dnsmasq.d/zimbra.conf
     local service
     for service in systemd-resolved dnsmasq; do
@@ -1108,6 +1196,48 @@ rollback_resolver() {
         else systemctl disable "$service" 2>/dev/null || true; fi
         if [[ -f "$RESOLVER_BACKUP/$service.active" ]]; then systemctl restart "$service" || true; fi
     done
+}
+
+snapshot_host_config() {
+    [[ -z "$HOST_CONFIG_BACKUP" ]] || return 0
+
+    HOST_CONFIG_BACKUP=$(mktemp -d /root/zimbra-host-backup.XXXXXX)
+    chmod 700 "$HOST_CONFIG_BACKUP"
+    hostname > "$HOST_CONFIG_BACKUP/runtime-hostname"
+    [[ ! -e /etc/hostname && ! -L /etc/hostname ]] || \
+        cp -a /etc/hostname "$HOST_CONFIG_BACKUP/hostname"
+    [[ ! -e /etc/hosts && ! -L /etc/hosts ]] || \
+        cp -a /etc/hosts "$HOST_CONFIG_BACKUP/hosts"
+    HOST_CONFIG_PENDING=yes
+}
+
+rollback_host_config() {
+    local previous_hostname
+
+    echo "Restoring previous hostname and hosts file from $HOST_CONFIG_BACKUP" >&2
+    previous_hostname=$(cat "$HOST_CONFIG_BACKUP/runtime-hostname")
+    hostnamectl set-hostname "$previous_hostname" 2>/dev/null || \
+        hostname "$previous_hostname" 2>/dev/null || true
+
+    rm -f /etc/hostname /etc/hosts
+    [[ ! -e "$HOST_CONFIG_BACKUP/hostname" && ! -L "$HOST_CONFIG_BACKUP/hostname" ]] || \
+        cp -a "$HOST_CONFIG_BACKUP/hostname" /etc/hostname
+    [[ ! -e "$HOST_CONFIG_BACKUP/hosts" && ! -L "$HOST_CONFIG_BACKUP/hosts" ]] || \
+        cp -a "$HOST_CONFIG_BACKUP/hosts" /etc/hosts
+}
+
+commit_host_network_config() {
+    HOST_CONFIG_PENDING=no
+    RESOLVER_PENDING=no
+    echo "Host configuration backup: $HOST_CONFIG_BACKUP"
+    echo "Resolver backup          : $RESOLVER_BACKUP"
+}
+
+clear_internal_secrets() {
+    unset LDAP_ROOT_PASS LDAP_ADMIN_PASS LDAP_AMAVIS_PASS LDAP_POSTFIX_PASS
+    unset LDAP_NGINX_PASS LDAP_REP_PASS SPAM_ACCOUNT_PASS HAM_ACCOUNT_PASS
+    unset QUARANTINE_ACCOUNT_PASS MAILBOXD_KEYSTORE_PASS
+    unset MAILBOXD_TRUSTSTORE_PASS CONFIG_ADMIN_PASS
 }
 
 repair_bootstrap_dns() {
@@ -1133,6 +1263,11 @@ cleanup() {
         fi
     fi
     if [[ "$RESOLVER_PENDING" == yes ]]; then rollback_resolver; fi
+    if [[ "$HOST_CONFIG_PENDING" == yes ]]; then rollback_host_config; fi
+
+    [[ -z "$CONFIG_FILE" ]] || rm -f -- "$CONFIG_FILE"
+    [[ -z "$SOFTWARE_CONFIG_FILE" ]] || rm -f -- "$SOFTWARE_CONFIG_FILE"
+    clear_internal_secrets
 
     if [[ -n "$WORKDIR" && -d "$WORKDIR" ]]; then
         rm -rf -- "$WORKDIR"
@@ -1195,14 +1330,14 @@ while [[ $# -gt 0 ]]; do
         --password)
             require_value "$1" "$#" "${2:-}"
             ADMIN_PASS="$2"
+            ADMIN_PASS_SOURCE="command line"
             shift 2
             ;;
 
         --password-file)
             require_value "$1" "$#" "${2:-}"
-            [[ -r "$2" ]] || die "Cannot read password file: $2"
-            IFS= read -r ADMIN_PASS < "$2" || true
-            [[ -n "$ADMIN_PASS" ]] || die "Password file is empty: $2"
+            read_admin_password_file "$2"
+            ADMIN_PASS_SOURCE="password file"
             shift 2
             ;;
 
@@ -1254,7 +1389,10 @@ done
 detect_ubuntu_version
 DOMAIN="${DOMAIN,,}"
 MAIL_HOST="${MAIL_HOST,,}"
-ADMIN_PASS="${ADMIN_PASS:-${ZIMBRA_ADMIN_PASSWORD:-}}"
+if [[ -z "$ADMIN_PASS" && -n "${ZIMBRA_ADMIN_PASSWORD:-}" ]]; then
+    ADMIN_PASS="$ZIMBRA_ADMIN_PASSWORD"
+    ADMIN_PASS_SOURCE="environment variable"
+fi
 unset ZIMBRA_ADMIN_PASSWORD
 [[ "$ONLY_FIREWALL" != yes || "$CONFIGURE_FIREWALL" != no ]] || die "Conflicting firewall options"
 [[ -z "$LOCAL_IP" ]] || is_valid_ipv4 "$LOCAL_IP" || die "Invalid local IPv4"
@@ -1270,11 +1408,10 @@ if [[ "${ONLY_FIREWALL:-no}" != "yes" ]]; then
     [[ "$TIMEZONE" =~ ^[a-zA-Z0-9_+-]+(/[a-zA-Z0-9_+-]+)+$ ]] || \
         die "Invalid timezone: $TIMEZONE"
     [[ "$ZCS_SHA256" =~ ^[a-f0-9]{64}$ ]] || die "Invalid SHA-256 value"
-    [[ "$ADMIN_PASS" != *$'\n'* && "$ADMIN_PASS" != *$'\r'* ]] || \
-        die "Admin password must be a single line"
-
     FQDN="${MAIL_HOST}.${DOMAIN}"
     ADMIN_EMAIL="admin@${DOMAIN}"
+    validate_fqdn "$FQDN"
+    if [[ -n "$ADMIN_PASS" ]]; then validate_admin_password "$ADMIN_PASS"; fi
 else
     DOMAIN="${DOMAIN:-localhost}"
     MAIL_HOST="${MAIL_HOST:-mail}"
@@ -1310,6 +1447,9 @@ ARCH=$(uname -m)
 echo "Detected OS     : Ubuntu ${VERSION_ID} (${UBUNTU_CODENAME})"
 echo "Architecture    : ${ARCH}"
 echo "ZCS Version     : ${ZCS_VERSION} GA (${ZCS_BUILD})"
+if [[ "$ADMIN_PASS_SOURCE" == "command line" ]]; then
+    echo "WARNING: --password can be exposed through shell history and the process list; use --password-file instead."
+fi
 
 if [[ "$ONLY_FIREWALL" == yes ]]; then
     repair_bootstrap_dns
@@ -1442,12 +1582,15 @@ if [[ -z "$SERVER_IP" ]]; then
     echo "Detected IPv4: $SERVER_IP"
 fi
 
+check_fqdn_dns_safety
+report_ptr_status
+
 if [[ -z "$ADMIN_PASS" ]]; then
     ADMIN_PASS=$(openssl rand -hex 16)
+    ADMIN_PASS_SOURCE="generated"
 fi
 
-[[ "$ADMIN_PASS" != *$'\n'* && "$ADMIN_PASS" != *$'\r'* ]] || \
-    die "Admin password must be a single line"
+validate_admin_password "$ADMIN_PASS"
 install -m 600 /dev/null "$RESULT_FILE"
 printf 'Installation in progress\nAdmin: %s\nPassword: %s\n' "$ADMIN_EMAIL" "$ADMIN_PASS" > "$RESULT_FILE"
 
@@ -1488,10 +1631,11 @@ echo "Installer  : $ZCS_TGZ"
 
 log "Configure hostname"
 
+snapshot_host_config
 hostnamectl set-hostname "$FQDN"
 
-# Keep one deterministic mapping for this server and retain a recoverable backup.
-cp -a /etc/hosts "/etc/hosts.pre-zimbra.$(date +%Y%m%d%H%M%S)"
+# Keep one deterministic mapping for this server. The original files are kept
+# in HOST_CONFIG_BACKUP until the complete Zimbra configuration is verified.
 HOSTS_TMP=$(mktemp /etc/.hosts.zimbra.XXXXXX)
 awk -v fqdn="$FQDN" -v short="$MAIL_HOST" -v server_ip="$LOCAL_IP" '
     {
@@ -1631,9 +1775,9 @@ awk -v fqdn="${FQDN,,}." 'tolower($2)==fqdn {found=1} END {exit !found}' <<< "$M
     die "MX resolution failed"
 }
 
-# Commit only a functioning resolver; retain the backup for manual recovery.
+# Keep the resolver transaction pending until Zimbra itself is configured and
+# verified; a later installation failure will restore the original resolver.
 getent ahostsv4 repo.zimbra.com >/dev/null || die "Outbound DNS failed after local DNS setup"
-RESOLVER_PENDING=no
 echo "Public DNS (configure A/MX/PTR/SPF/DKIM/DMARC separately):"
 dig @1.1.1.1 +short +time=3 +tries=1 "$FQDN" A || true
 dig @1.1.1.1 +short +time=3 +tries=1 "$DOMAIN" MX || true
@@ -1689,7 +1833,7 @@ patch_zimbra_installer "$ZCS_DIR"
 
 log "Create software installer configuration"
 
-SOFTWARE_CONFIG_FILE="/root/zimbra-software-install.conf"
+SOFTWARE_CONFIG_FILE=$(mktemp /root/zimbra-software-install.XXXXXX)
 
 install -m 600 /dev/null "$SOFTWARE_CONFIG_FILE"
 cat > "$SOFTWARE_CONFIG_FILE" <<EOF
@@ -1718,6 +1862,8 @@ if ! ./install.sh -s "$SOFTWARE_CONFIG_FILE"; then
     fi
     die "Zimbra software installation failed"
 fi
+rm -f -- "$SOFTWARE_CONFIG_FILE"
+SOFTWARE_CONFIG_FILE=""
 
 # ------------------------------------------------------------
 # Check software install
@@ -1736,6 +1882,8 @@ LDAP_AMAVIS_PASS=$(openssl rand -hex 20)
 LDAP_POSTFIX_PASS=$(openssl rand -hex 20)
 LDAP_NGINX_PASS=$(openssl rand -hex 20)
 LDAP_REP_PASS=$(openssl rand -hex 20)
+MAILBOXD_KEYSTORE_PASS=$(openssl rand -hex 20)
+MAILBOXD_TRUSTSTORE_PASS=$(openssl rand -hex 20)
 SYSTEM_ACCOUNT_SUFFIX=$(openssl rand -hex 5)
 SPAM_ACCOUNT="spam.${SYSTEM_ACCOUNT_SUFFIX}@${DOMAIN}"
 HAM_ACCOUNT="ham.${SYSTEM_ACCOUNT_SUFFIX}@${DOMAIN}"
@@ -1750,7 +1898,7 @@ QUARANTINE_ACCOUNT_PASS=$(openssl rand -hex 16)
 
 log "Generate Zimbra setup configuration"
 
-CONFIG_FILE="/root/zimbra-setup.conf"
+CONFIG_FILE=$(mktemp /root/zimbra-setup.XXXXXX)
 CONFIG_ADMIN_PASS=$(escape_config_value "$ADMIN_PASS")
 
 install -m 600 /dev/null "$CONFIG_FILE"
@@ -1843,8 +1991,8 @@ ZIMBRA_REQ_SECURITY="yes"
 ldap_bes_searcher_password="$LDAP_ADMIN_PASS"
 ldap_nginx_password="$LDAP_NGINX_PASS"
 
-mailboxd_keystore_password="$CONFIG_ADMIN_PASS"
-mailboxd_truststore_password="changeit"
+mailboxd_keystore_password="$MAILBOXD_KEYSTORE_PASS"
+mailboxd_truststore_password="$MAILBOXD_TRUSTSTORE_PASS"
 
 zimbraIPMode="ipv4"
 
@@ -1864,11 +2012,14 @@ chmod 600 "$CONFIG_FILE"
 log "Configure Zimbra"
 
 /opt/zimbra/libexec/zmsetup.pl -c "$CONFIG_FILE"
+rm -f -- "$CONFIG_FILE"
+CONFIG_FILE=""
 
 # Some Zimbra builds fall back to HOSTNAME for these three accounts even when
 # AVDOMAIN is set. Verify them against the primary mail domain and repair the
 # configuration before reporting a successful installation.
 ensure_zimbra_system_accounts
+clear_internal_secrets
 
 # ------------------------------------------------------------
 # Verification
@@ -1894,6 +2045,11 @@ if grep -qiE 'Stopped|not running' <<< "$STATUS"; then
     echo
     die "At least one Zimbra service is not running"
 fi
+
+# Zimbra is now configured and running with this hostname and resolver. Keep
+# their backups for manual recovery, but do not roll them back if a later
+# post-install step such as DKIM or the optional firewall fails.
+commit_host_network_config
 
 # ------------------------------------------------------------
 # Generate DKIM if needed
