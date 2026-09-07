@@ -5,11 +5,14 @@ set -Eeuo pipefail
 # Files containing credentials are explicitly restricted to mode 600 below.
 umask 022
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+readonly SCRIPT_DIR
+
 # ============================================================
 # Zimbra 10 FOSS Automated Installer
 # Supported OS: Ubuntu 22.04 LTS (Jammy) / Ubuntu 24.04 LTS (Noble)
 # Ubuntu 22.04: Zimbra 10.1.20 (GA 0326.UBUNTU22_64.20260821115118)
-# Ubuntu 24.04: Zimbra 10.1.19 (GA 0326.UBUNTU24_64.20260707135412)
+# Ubuntu 24.04: Zimbra 10.1.20 (GA 0326.UBUNTU24_64.20260821120929)
 # Firewall    : ConfigServer Security & Firewall (CSF + LFD)
 #
 # Usage:
@@ -18,6 +21,23 @@ umask 022
 
 readonly ZCS_PACKAGES="zimbra-core zimbra-ldap zimbra-logger zimbra-mta zimbra-snmp zimbra-store zimbra-apache zimbra-spell zimbra-memcached zimbra-proxy"
 readonly FIREWALL_PUBLIC_TCP_PORTS="25 80 443 465 587 993 995"
+IPV6_ENABLED=yes
+readonly CSF_VERSION="15.10"
+readonly CSF_URL="https://github.com/Aetherinox/csf-firewall/releases/download/${CSF_VERSION}/csf-firewall-v${CSF_VERSION}.tgz"
+readonly CSF_SHA256="788317da71d31a338da4cff3bdae9471137efc3978436692fe9d005eb70f54b3"
+readonly CSF_TEMPLATE_URL="https://raw.githubusercontent.com/phongdh262/tools/5aee2ea3a1579637ed3e5449b1ff39caffae44f5/csf.conf"
+readonly CSF_TEMPLATE_SHA256="5e87bd15dc52a149f68cfdf6cb4243bdba2a15d90da19c763696ec62354ebc5e"
+ADMIN_CIDR=""
+LOCAL_IP=""
+CSF_TEMPLATE=""
+CSF_TGZ=""
+FIREWALL_BACKUP=""
+FIREWALL_PENDING=no
+FIREWALL_TIMER=""
+RESOLVER_BACKUP=""
+RESOLVER_PENDING=no
+ONLY_FIREWALL=no
+RESULT_FILE="/root/ZIMBRA-INSTALL-INFO.txt"
 
 UBUNTU_CODENAME=""
 ZCS_VERSION=""
@@ -53,7 +73,7 @@ Usage:
 
 Supported Operating Systems:
   Ubuntu 22.04 LTS (Jammy)  -> Zimbra 10.1.20 GA
-  Ubuntu 24.04 LTS (Noble)  -> Zimbra 10.1.19 GA
+  Ubuntu 24.04 LTS (Noble)  -> Zimbra 10.1.20 GA
 
 Required:
   --domain DOMAIN           Mail domain (for example: example.com)
@@ -65,11 +85,14 @@ Automatic defaults:
 
 Optional overrides:
   --ip IPV4                 Override the detected public IPv4 address
-  --password PASSWORD       Override the generated Zimbra admin password
+  --password PASSWORD       Deprecated: use --password-file to avoid process/history exposure
   --password-file FILE      Read the password from the first line of FILE
   ZIMBRA_ADMIN_PASSWORD     Environment variable password override
 
 Optional:
+  --admin-cidr IP_OR_CIDR    Allow admin port 7071 from this network only
+                            Default: current SSH client; otherwise use an SSH tunnel
+  --local-ip IPV4           Local interface IPv4 (auto-detected; useful behind NAT)
   --skip-firewall           Do not configure or enable CSF firewall
   --only-firewall           Only configure CSF firewall (useful when Zimbra is already installed)
   --mail-host NAME          Hostname prefix (default: mail)
@@ -114,7 +137,11 @@ print_install_summary() {
     summary_section "ADMIN LOGIN"
     summary_field "URL" "https://$FQDN:7071"
     summary_field "Username" "$ADMIN_EMAIL"
-    summary_field "Password" "$ADMIN_PASS"
+    if [[ "${1:-}" == "--include-password" ]]; then
+        summary_field "Password" "$ADMIN_PASS"
+    else
+        summary_field "Credentials file" "$RESULT_FILE (root only)"
+    fi
 
     summary_section "DKIM DNS RECORD"
     summary_field "Host / Name" "$DKIM_DNS_NAME"
@@ -122,6 +149,8 @@ print_install_summary() {
     summary_field "Value" "$DKIM_TXT_VALUE"
 
     summary_section "CSF FIREWALL CONFIGURATION"
+    summary_field "Status" "$FIREWALL_STATUS"
+    summary_field "SSH" "$SSH_PORT"
     printf '%s\n' "$FIREWALL_RULES" | sed 's/^/  /'
 
     summary_section "ZIMBRA SERVICE STATUS"
@@ -129,7 +158,8 @@ print_install_summary() {
 
     echo
     summary_rule '='
-    printf '%s\n' 'Keep this information secure: it contains the admin password.'
+    summary_field "Admin access" "$FIREWALL_ADMIN_ACCESS"
+    printf '%s\n' 'Store the credentials file securely; do not include it in support logs.'
     summary_rule '='
 }
 
@@ -336,11 +366,11 @@ detect_ubuntu_version() {
             ;;
         "24.04")
             UBUNTU_CODENAME="noble"
-            ZCS_VERSION="10.1.19"
-            ZCS_BUILD="0326.UBUNTU24_64.20260707135412"
+            ZCS_VERSION="10.1.20"
+            ZCS_BUILD="0326.UBUNTU24_64.20260821120929"
             ZCS_ARCHIVE="zcs-${ZCS_VERSION}_GA_${ZCS_BUILD}.tgz"
             DEFAULT_ZCS_URL="https://github.com/phongdh262/tools/releases/download/zimbra-${ZCS_VERSION}-u24/${ZCS_ARCHIVE}"
-            DEFAULT_ZCS_SHA256="f2dfd5a705b0dc6fa292431f417d77e8e62b96db64e23e498553e2eb14451d45"
+            DEFAULT_ZCS_SHA256="07bbd4662e3f5211986c71b68cf2fe28b2185bd3c796ad8a69c8c10a6ef2fa69"
             ;;
         *)
             die "Unsupported Ubuntu version: ${VERSION_ID:-unknown}. Supported: 22.04, 24.04"
@@ -351,6 +381,7 @@ detect_ubuntu_version() {
         ZCS_SOURCE="$DEFAULT_ZCS_URL"
     fi
     if [[ -z "$ZCS_SHA256" ]]; then
+        [[ "$ZCS_SOURCE" == "$DEFAULT_ZCS_URL" ]] || die "Custom installer requires --sha256"
         ZCS_SHA256="$DEFAULT_ZCS_SHA256"
     fi
 }
@@ -404,7 +435,7 @@ is_valid_domain() {
     local -a labels
 
     (( ${#domain} <= 253 )) || return 1
-    [[ "$domain" == *.* && "$domain" != *..* ]] || return 1
+    [[ "$domain" == *.* && "$domain" != *..* && "$domain" != *. ]] || return 1
     IFS='.' read -r -a labels <<< "$domain"
     for label in "${labels[@]}"; do
         (( ${#label} <= 63 )) || return 1
@@ -423,8 +454,7 @@ escape_config_value() {
 installer_is_valid() {
     local archive="$1"
 
-    echo "${ZCS_SHA256}  ${archive}" | sha256sum --check --status && \
-        tar -tzf "$archive" >/dev/null
+    verify_sha256 "$archive" "$ZCS_SHA256" && tar -tzf "$archive" >/dev/null
 }
 
 verify_installer() {
@@ -436,7 +466,9 @@ verify_installer() {
 
 patch_zimbra_installer() {
     local utilfunc="$1/util/utilfunc.sh"
+    # shellcheck disable=SC2016
     local unsafe_condition='if [ $P7ZIPREQUIRED = "yes" ]; then'
+    # shellcheck disable=SC2016
     local safe_condition='if [ "${P7ZIPREQUIRED:-no}" = "yes" ]; then'
     local unsafe_count
 
@@ -452,6 +484,7 @@ patch_zimbra_installer() {
     [[ "$unsafe_count" == "1" ]] || \
         die "Unexpected P7ZIP condition in bundled Zimbra installer"
 
+    # shellcheck disable=SC2016
     sed -i.zimbra-auto-backup \
         's/if \[ \$P7ZIPREQUIRED = "yes" \]; then/if [ "${P7ZIPREQUIRED:-no}" = "yes" ]; then/' \
         "$utilfunc"
@@ -593,7 +626,11 @@ fetch_reference_epoch() {
         fi
     done
 
-    (( ${#epochs[@]} > 0 )) || return 1
+    (( ${#epochs[@]} >= 2 )) || return 1
+    local minimum maximum
+    minimum=$(printf '%s\n' "${epochs[@]}" | sort -n | head -1)
+    maximum=$(printf '%s\n' "${epochs[@]}" | sort -n | tail -1)
+    (( maximum - minimum <= 60 )) || return 1
 
     printf '%s\n' "${epochs[@]}" | sort -n | \
         awk '{values[NR] = $1} END {print values[int((NR + 1) / 2)]}'
@@ -636,7 +673,8 @@ synchronize_system_clock() {
         (( attempt++ ))
     done
 
-    reference_epoch=$(fetch_reference_epoch || true)
+    # A cached HTTP Date must never override an already synchronized NTP clock.
+    if [[ "$ntp_synchronized" != yes ]]; then reference_epoch=$(fetch_reference_epoch || true); fi
 
     if [[ "$reference_epoch" =~ ^[0-9]{10,}$ ]]; then
         local_epoch=$(date -u +%s)
@@ -667,141 +705,392 @@ synchronize_system_clock() {
     fi
 }
 
-configure_csf() {
-    local port
-    local raw_ssh_port
-    local csf_tgz="/usr/src/csf.tgz"
+is_valid_admin_network() {
+    python3 - "$1" <<'PY'
+import ipaddress, re, sys
+try:
+    if not re.fullmatch(r"[0-9A-Fa-f:./]+", sys.argv[1]):
+        raise ValueError("Invalid network characters")
+    network = ipaddress.ip_network(sys.argv[1], strict=False)
+    if network.prefixlen == 0 or network.is_unspecified or network.is_multicast:
+        raise ValueError('Unrestricted or invalid administrator network')
+except ValueError:
+    sys.exit(1)
+PY
+}
 
-    log "Configure CSF firewall"
+verify_sha256() {
+    local file="$1" expected="$2"
+    [[ "$expected" =~ ^[a-f0-9]{64}$ ]] || return 1
+    [[ -f "$file" && ! -L "$file" ]] || return 1
+    [[ "$(sha256sum -- "$file" | awk '{print $1}')" == "$expected" ]]
+}
 
-    if systemctl is-active --quiet firewalld 2>/dev/null; then
-        die "firewalld is active; disable it before configuring CSF"
+fetch_verified() {
+    local url="$1" expected="$2" destination="$3"
+    local temporary
+    temporary=$(mktemp "${destination}.part.XXXXXX")
+    if ! curl --fail --location --proto '=https' --proto-redir '=https' \
+        --retry 3 --connect-timeout 15 --max-time 1200 \
+        --output "$temporary" "$url"; then
+        rm -f -- "$temporary"
+        return 1
     fi
-
-    # Disable UFW if present to prevent conflicting firewall rules
-    if command -v ufw >/dev/null 2>&1; then
-        echo "Disabling UFW to avoid conflict with CSF..."
-        ufw disable 2>/dev/null || true
-        systemctl stop ufw 2>/dev/null || true
-        systemctl disable ufw 2>/dev/null || true
+    if ! verify_sha256 "$temporary" "$expected"; then
+        rm -f -- "$temporary"
+        return 1
     fi
+    chmod 600 "$temporary"
+    mv -f -- "$temporary" "$destination"
+}
 
-    raw_ssh_port=$(detect_ssh_port)
+validate_csf_template() {
+    perl - "$1" <<'PERL'
+use strict;
+use warnings;
+my %seen;
+while (<>) {
+    next if /^\s*(?:#|$)/;
+    /^([A-Za-z][A-Za-z0-9_]*)\s*=\s*"([^"\r\n]*)"\s*$/ or die "Invalid CSF configuration line $.\n";
+    die "Duplicate CSF key: $1\n" if $seen{$1}++;
+}
+for my $key (qw(TESTING TCP_IN TCP_OUT TCP6_IN TCP6_OUT UDP_IN UDP_OUT UDP6_IN UDP6_OUT IPV6 UI)) {
+    die "Missing CSF key: $key\n" unless $seen{$key};
+}
+PERL
+}
 
-    # Download and install CSF if not already installed
-    if ! command -v csf >/dev/null 2>&1; then
-        log "Downloading and installing ConfigServer Security & Firewall (CSF)"
-        mkdir -p /usr/src
-
-        local csf_url="https://download.configserver.dev/csf.tgz"
-        local csf_ready=0
-
-        # Check if a valid csf.tgz was already downloaded or placed locally
-        for existing_archive in "/tmp/csf.tgz" "./csf.tgz" "$csf_tgz"; do
-            if [[ -f "$existing_archive" ]] && tar -tzf "$existing_archive" >/dev/null 2>&1; then
-                echo "Found valid existing CSF archive: $existing_archive"
-                if [[ "$existing_archive" != "$csf_tgz" ]]; then
-                    cp -f "$existing_archive" "$csf_tgz"
-                fi
-                csf_ready=1
-                break
-            fi
-        done
-
-        if (( csf_ready == 0 )); then
-            echo "Downloading CSF from $csf_url..."
-            if command -v curl >/dev/null 2>&1; then
-                if curl -fSL --retry 3 --connect-timeout 15 -A "Mozilla/5.0" -o "$csf_tgz" "$csf_url"; then
-                    csf_ready=1
-                fi
-            fi
-
-            if (( csf_ready == 0 )) && command -v wget >/dev/null 2>&1; then
-                if wget --tries=3 --timeout=15 -U "Mozilla/5.0" -O "$csf_tgz" "$csf_url"; then
-                    csf_ready=1
-                fi
-            fi
-        fi
-
-        if (( csf_ready == 0 )) || ! tar -tzf "$csf_tgz" >/dev/null 2>&1; then
-            die "Failed to download or verify valid CSF archive from $csf_url"
-        fi
-
-        rm -rf /usr/src/csf
-        tar -xzf "$csf_tgz" -C /usr/src
-        (
-            cd /usr/src/csf
-            sh install.sh
-        )
-    fi
-
-    if [[ -x /usr/local/csf/bin/csftest.pl ]]; then
-        echo "Testing CSF iptables compatibility:"
-        perl /usr/local/csf/bin/csftest.pl || true
-        echo
-    fi
-
-    # Delete default csf.conf after installing CSF as requested
-    echo "Removing default csf.conf..."
-    rm -f /etc/csf/csf.conf
-
-    # Download template csf.conf from git repository
-    log "Download custom csf.conf template from git"
-    local script_dir
-    script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")
-    local local_csf_conf="${script_dir}/csf.conf"
-    local csf_conf_url="https://raw.githubusercontent.com/phongdh262/tools/main/csf.conf"
-    local fallback_url="https://raw.githubusercontent.com/phongdh262/tools/Phondh/csf.conf"
-
-    if [[ -n "$script_dir" && -f "$local_csf_conf" ]]; then
-        echo "Using local csf.conf template: $local_csf_conf"
-        cp -f "$local_csf_conf" /etc/csf/csf.conf
-    elif curl -fSL -s --connect-timeout 10 -o /etc/csf/csf.conf "$csf_conf_url" 2>/dev/null; then
-        echo "Downloaded custom csf.conf from $csf_conf_url"
-    elif curl -fSL -s --connect-timeout 10 -o /etc/csf/csf.conf "$fallback_url" 2>/dev/null; then
-        echo "Downloaded custom csf.conf from $fallback_url"
-    elif wget -q -O /etc/csf/csf.conf "$csf_conf_url" 2>/dev/null; then
-        echo "Downloaded custom csf.conf from $csf_conf_url via wget"
-    elif wget -q -O /etc/csf/csf.conf "$fallback_url" 2>/dev/null; then
-        echo "Downloaded custom csf.conf from $fallback_url via wget"
-    fi
-
-    [[ -f /etc/csf/csf.conf ]] || die "Failed to download /etc/csf/csf.conf from git repository"
-
-    # Ensure current SSH port is permitted in TCP_IN and TCP6_IN (in case custom SSH port is used)
-    perl -i -s -pe '
-        if (/^(TCP_IN|TCP6_IN)\s*=\s*"([^"]*)"/) {
-            my $key = $1;
-            my %ports = map { $_ => 1 } grep { length } split(/\s*,\s*/, $2);
-            $ports{$add_port} = 1 if length($add_port);
-            my $new_ports = join(",", sort { (split(/:/, $a))[0] <=> (split(/:/, $b))[0] } grep { /^\d+(:\d+)?$/ } keys %ports);
-            $_ = "$key = \"$new_ports\"\n";
+set_csf_value() {
+    local file="$1" key="$2" value="$3"
+    CSF_KEY="$key" CSF_VALUE="$value" perl -i -pe '
+        if (/^\Q$ENV{CSF_KEY}\E\s*=/) {
+            $_ = "$ENV{CSF_KEY} = \"$ENV{CSF_VALUE}\"\n"; $found = 1;
         }
-    ' -- -add_port="${raw_ssh_port}" /etc/csf/csf.conf
+        END {die "Missing CSF key $ENV{CSF_KEY}\n" unless $found}
+    ' "$file"
+}
 
-    # Ensure testing mode is disabled
-    sed -i 's/^TESTING\s*=\s*"1"/TESTING = "0"/' /etc/csf/csf.conf
+build_csf_config() {
+    local template="$1" defaults="$2" output="$3" ports="$4"
+    validate_csf_template "$template" || return 1
+    # Preserve newer CSF keys absent from the reference template.
+    perl - "$template" "$defaults" > "$output" <<'PERL'
+use strict;
+use warnings;
+my $template = shift;
+open my $fh, '<', $template or die $!;
+my %values;
+while (<$fh>) { $values{$1} = $2 if /^([A-Za-z][A-Za-z0-9_]*)\s*=\s*"([^"\r\n]*)"\s*$/ }
+while (<>) {
+    if (/^([A-Za-z][A-Za-z0-9_]*)\s*=/ && exists $values{$1}) { print "$1 = \"$values{$1}\"\n" }
+    else { print }
+}
+PERL
+    local key
+    for key in TCP_IN TCP6_IN; do set_csf_value "$output" "$key" "$ports"; done
+    for key in UDP_IN UDP6_IN; do set_csf_value "$output" "$key" ''; done
+    for key in TESTING UI AUTO_UPDATES; do set_csf_value "$output" "$key" 0; done
+    if [[ "$IPV6_ENABLED" == yes ]]; then set_csf_value "$output" IPV6 1
+    else set_csf_value "$output" IPV6 0; fi
+    set_csf_value "$output" CUSTOM1_LOG /opt/zimbra/log/audit.log
+    set_csf_value "$output" SMTPAUTH_LOG /var/log/zimbra.log
+    set_csf_value "$output" LF_SMTPAUTH 5
+    set_csf_value "$output" LF_SMTPAUTH_PERM 300
+    validate_csf_template "$output"
+}
 
-    # Enable CSF and reload rules
+write_zimbra_auth_module() {
+    cat > "$1" <<'PERL'
+package ZimbraAuth;
+use strict;
+use warnings;
+use Socket qw(AF_INET AF_INET6 inet_pton);
+sub match {
+    my ($line, $file) = @_;
+    return unless $file eq '/opt/zimbra/log/audit.log';
+    # Only accept the address in Zimbra's structured metadata, never a username,
+    # error message or client-supplied forwarded address. Do not ban the proxy.
+    return unless $line =~ /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+\s+\S+\s+\[[^\]\r\n]*\]\s+\[([^\]\r\n]*)\]\s+security - .*\berror=authentication failed\b/;
+    my $metadata = $1;
+    my @addresses = $metadata =~ /(?:^|;)ip=([^;]+)(?=;|$)/g;
+    return unless @addresses == 1;
+    my $ip = $addresses[0];
+    my $packed = inet_pton(AF_INET, $ip) // inet_pton(AF_INET6, $ip);
+    return unless defined $packed;
+    return if $ip =~ /^127\./ || $ip eq '::1' || $ip eq '0.0.0.0' || $ip eq '::';
+    return ('Failed Zimbra authentication from', $ip, 'zimbraauth', 5,
+            '443,993,995,7071', 300, 0);
+}
+1;
+PERL
+}
+
+install_zimbra_lfd_filter() {
+    local custom=/usr/local/csf/bin/regex.custom.pm
+    [[ -f "$custom" ]] || die "Missing CSF custom regex hook"
+    write_zimbra_auth_module /usr/local/csf/bin/zimbra-auth.pm
+    chmod 600 /usr/local/csf/bin/zimbra-auth.pm
+    if ! grep -q 'ZIMBRA_AUTO_AUTH_HOOK' "$custom"; then
+        perl -0777 -i -pe '
+            $n = s/(sub custom_line\s*\{)/$1\n    # ZIMBRA_AUTO_AUTH_HOOK\n    require "\/usr\/local\/csf\/bin\/zimbra-auth.pm";\n    my \@zimbra_match = ZimbraAuth::match(\@_);\n    return \@zimbra_match if \@zimbra_match;\n/;
+            die "Unexpected CSF custom_line format\n" unless $n == 1;
+        ' "$custom"
+    fi
+    perl -c /usr/local/csf/bin/zimbra-auth.pm
+    perl -c "$custom"
+}
+
+prepare_firewall_assets() {
+    install -d -m 700 "$DOWNLOAD_DIR"
+    CSF_TEMPLATE="$DOWNLOAD_DIR/csf-template.conf"
+    if [[ -f "$SCRIPT_DIR/csf.conf" ]]; then
+        verify_sha256 "$SCRIPT_DIR/csf.conf" "$CSF_TEMPLATE_SHA256" || \
+            die "Local csf.conf does not match this installer; download the matching template"
+        install -m 600 "$SCRIPT_DIR/csf.conf" "$CSF_TEMPLATE"
+    else
+        fetch_verified "$CSF_TEMPLATE_URL" "$CSF_TEMPLATE_SHA256" "$CSF_TEMPLATE" || \
+            die "Cannot download and verify CSF template"
+    fi
+    validate_csf_template "$CSF_TEMPLATE" || die "Invalid CSF template"
+    if ! command -v csf >/dev/null 2>&1; then
+        CSF_TGZ="$DOWNLOAD_DIR/csf-${CSF_VERSION}.tgz"
+        if ! verify_sha256 "$CSF_TGZ" "$CSF_SHA256"; then
+            fetch_verified "$CSF_URL" "$CSF_SHA256" "$CSF_TGZ" || die "Cannot download and verify CSF"
+        fi
+        tar -tzf "$CSF_TGZ" >/dev/null || die "Corrupt CSF archive"
+    fi
+}
+
+snapshot_firewall() {
+    FIREWALL_BACKUP=$(mktemp -d /root/zimbra-firewall-backup.XXXXXX)
+    chmod 700 "$FIREWALL_BACKUP"
+    iptables-save > "$FIREWALL_BACKUP/ipv4.rules"
+    if [[ "$IPV6_ENABLED" == yes ]]; then ip6tables-save > "$FIREWALL_BACKUP/ipv6.rules"; fi
+    local service
+    for service in csf lfd ufw firewalld; do
+        systemctl is-enabled "$service" > "$FIREWALL_BACKUP/$service.state" 2>/dev/null || true
+        systemctl is-active --quiet "$service" && touch "$FIREWALL_BACKUP/$service.active"
+        systemctl is-enabled --quiet "$service" && touch "$FIREWALL_BACKUP/$service.enabled"
+    done
+    if command -v ufw >/dev/null 2>&1 && LC_ALL=C ufw status | grep -q '^Status: active'; then
+        touch "$FIREWALL_BACKUP/ufw.active"
+    fi
+    [[ ! -d /etc/csf ]] || cp -a /etc/csf "$FIREWALL_BACKUP/csf"
+    [[ ! -d /etc/ufw ]] || cp -a /etc/ufw "$FIREWALL_BACKUP/ufw"
+    [[ ! -f /etc/default/ufw ]] || cp -a /etc/default/ufw "$FIREWALL_BACKUP/ufw.default"
+    [[ ! -f /usr/local/csf/bin/regex.custom.pm ]] || \
+        cp -a /usr/local/csf/bin/regex.custom.pm "$FIREWALL_BACKUP/regex.custom.pm"
+    [[ ! -f /usr/local/csf/bin/zimbra-auth.pm ]] || \
+        cp -a /usr/local/csf/bin/zimbra-auth.pm "$FIREWALL_BACKUP/zimbra-auth.pm"
+    printf '%s\n' "$$" > "$FIREWALL_BACKUP/installer.pid"
+    awk '{print $22}' /proc/$$/stat > "$FIREWALL_BACKUP/installer.start"
+    cat > "$FIREWALL_BACKUP/rollback.sh" <<'ROLLBACK'
+#!/usr/bin/env bash
+set -u
+cd -- "$(dirname -- "$0")" || exit 1
+# Serialise rollback and the installer's final commit, including timer races.
+exec 9>transaction.lock
+flock 9
+[[ ! -e committed && ! -e rolled-back ]] || exit 0
+if [[ "${1:-}" == --watchdog ]]; then
+    pid=$(cat installer.pid)
+    if [[ -f /proc/$pid/stat ]] && [[ "$(awk '{print $22}' /proc/"$pid"/stat)" == "$(cat installer.start)" ]]; then
+        kill -TERM "$pid" 2>/dev/null || true
+        pkill -TERM -P "$pid" 2>/dev/null || true
+    fi
+fi
+failed=0
+if [[ ! -d csf ]] && command -v csf >/dev/null; then csf -x || failed=1; fi
+systemctl stop lfd csf 2>/dev/null || true
+systemctl disable lfd csf 2>/dev/null || true
+if [[ -d csf ]]; then
+    rm -rf /etc/csf
+    cp -a csf /etc/csf || failed=1
+fi
+for file in regex.custom.pm zimbra-auth.pm; do
+    if [[ -f "$file" ]]; then cp -a "$file" "/usr/local/csf/bin/$file" || failed=1
+    else rm -f "/usr/local/csf/bin/$file"; fi
+done
+if [[ -d ufw ]]; then
+    rm -rf /etc/ufw
+    cp -a ufw /etc/ufw || failed=1
+fi
+[[ ! -f ufw.default ]] || cp -a ufw.default /etc/default/ufw || failed=1
+for service in csf lfd ufw firewalld; do
+    if [[ "$(cat "$service.state")" == masked ]]; then
+        systemctl mask "$service" || failed=1
+        continue
+    fi
+    systemctl unmask "$service" 2>/dev/null || true
+    if [[ -f "$service.enabled" ]]; then systemctl enable "$service" || failed=1
+    else systemctl disable "$service" 2>/dev/null || true; fi
+    if [[ -f "$service.active" ]]; then systemctl restart "$service" || failed=1
+    else systemctl stop "$service" 2>/dev/null || true; fi
+done
+# Restore the exact kernel rules after service commands have changed them.
+iptables-restore -w 10 < ipv4.rules || failed=1
+if [[ -f ipv6.rules ]]; then ip6tables-restore -w 10 < ipv6.rules || failed=1; fi
+if (( failed )); then echo "Firewall rollback incomplete; inspect $PWD" >&2; exit 1; fi
+touch rolled-back
+ROLLBACK
+    chmod 700 "$FIREWALL_BACKUP/rollback.sh"
+    FIREWALL_TIMER="zimbra-firewall-rollback-$$"
+    FIREWALL_PENDING=yes
+    systemd-run --quiet --unit="$FIREWALL_TIMER" --on-active=10m \
+        /bin/bash "$FIREWALL_BACKUP/rollback.sh" --watchdog
+}
+
+commit_firewall() {
+    (
+        flock 9
+        [[ ! -e "$FIREWALL_BACKUP/rolled-back" ]] || exit 1
+        touch "$FIREWALL_BACKUP/committed"
+    ) 9>"$FIREWALL_BACKUP/transaction.lock" || die "Firewall watchdog already restored the previous rules"
+    FIREWALL_PENDING=no
+    systemctl stop "${FIREWALL_TIMER}.timer" || true
+    echo "Firewall backup: $FIREWALL_BACKUP"
+}
+
+configure_csf() {
+    local csf_work compatibility ports admin_client config_tmp
+    log "Configure CSF firewall"
+    systemctl is-active --quiet firewalld && die "firewalld is active; migrate it explicitly before using CSF"
+    [[ -s "$CSF_TEMPLATE" ]] || die "CSF assets were not prepared"
+    if [[ ! -e /proc/sys/net/ipv6/conf/all/disable_ipv6 ]] || \
+        [[ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)" == 1 ]]; then IPV6_ENABLED=no; fi
+    # Preserve every configured/listening SSH port, including socket activation.
+    ports="$FIREWALL_PUBLIC_TCP_PORTS $(detect_ssh_port)"
+    if command -v sshd >/dev/null 2>&1; then
+        ports+=" $(sshd -T | awk '$1 == "port" {print $2}')"
+    fi
+    ports+=" $(systemctl show ssh.socket --property=Listen --value 2>/dev/null | awk '{n=split($1,a,":"); print a[n]}' || true)"
+    ports+=" $(ss -H -lntp | awk '/"sshd"/ {n=split($4,a,":"); print a[n]}')"
+    ports=$(printf '%s\n' "$ports" | tr ' ' '\n' | awk '/^[0-9]+$/ && $1 > 0 && $1 < 65536' | sort -nu | paste -sd, -)
+    if [[ -z "$ADMIN_CIDR" && -n "${SSH_CONNECTION:-}" ]]; then
+        admin_client=${SSH_CONNECTION%% *}
+        is_valid_admin_network "$admin_client" || die "Cannot validate SSH client address"
+        ADMIN_CIDR="$admin_client"
+    fi
+    [[ -z "$ADMIN_CIDR" ]] || is_valid_admin_network "$ADMIN_CIDR" || die "Invalid administrator IP/CIDR"
+    snapshot_firewall
+    if ! command -v csf >/dev/null 2>&1; then
+        csf_work=$(mktemp -d "$DOWNLOAD_DIR/csf-install.XXXXXX")
+        tar -xzf "$CSF_TGZ" --no-same-owner -C "$csf_work"
+        [[ -f "$csf_work/csf/install.sh" ]] || die "Missing verified CSF installer"
+        (cd "$csf_work/csf" && sh install.sh)
+        rm -rf -- "$csf_work"
+    fi
+    command -v csf >/dev/null || die "CSF installation failed"
+    [[ -f /usr/local/csf/bin/csftest.pl ]] || die "CSF compatibility test is missing"
+    compatibility=$(perl /usr/local/csf/bin/csftest.pl) || die "CSF compatibility test failed"
+    printf '%s\n' "$compatibility"
+    # csftest.pl can report FATAL while returning exit code zero.
+    grep -q 'RESULT: csf \(should function\|will function\)' <<< "$compatibility" || \
+        die "CSF cannot function with this host's firewall modules"
+    config_tmp=$(mktemp /etc/csf/.csf.conf.XXXXXX)
+    build_csf_config "$CSF_TEMPLATE" /etc/csf/csf.conf "$config_tmp" "$ports"
+    chmod 600 "$config_tmp"
+    mv -f -- "$config_tmp" /etc/csf/csf.conf
+    # Keep administrator access restricted; leave unrelated existing allow rules.
+    touch /etc/csf/csf.allow
+    sed -i '/ # zimbra-auto-admin$/d' /etc/csf/csf.allow
+    if [[ -n "$ADMIN_CIDR" ]]; then
+        printf 'tcp|in|d=7071|s=%s # zimbra-auto-admin\n' "$ADMIN_CIDR" >> /etc/csf/csf.allow
+        FIREWALL_ADMIN_ACCESS="7071/tcp from $ADMIN_CIDR"
+    else
+        FIREWALL_ADMIN_ACCESS="SSH tunnel only (no administrator IP supplied)"
+    fi
+    install_zimbra_lfd_filter
+    if command -v ufw >/dev/null 2>&1; then
+        ufw disable
+        systemctl disable --now ufw
+    fi
     csf -e
     csf -r
-
-    # Enable and start lfd
-    systemctl enable --now lfd
-    systemctl status lfd --no-pager || true
-
+    systemctl enable csf lfd
+    systemctl restart lfd
+    systemctl is-active --quiet lfd || die "LFD did not start"
+    [[ ! -s /etc/csf/csf.error ]] || die "CSF reported an error; restoring previous firewall"
+    # Check effective IPv4 AND IPv6 policy and required public/SSH rules.
+    verify_firewall_rules "$ports"
+    getent ahostsv4 repo.zimbra.com >/dev/null || die "DNS failed after firewall activation"
+    commit_firewall
     FIREWALL_STATUS="active (CSF + LFD)"
-    FIREWALL_ADMIN_ACCESS="7071/tcp from any IPv4/IPv6"
-    SSH_PORT="${raw_ssh_port}/tcp from any IPv4/IPv6"
-
-    echo
-    echo "Final CSF port configuration:"
-    FIREWALL_RULES=$(grep -E '^(TCP_IN|TCP_OUT|UDP_IN|UDP_OUT) =' /etc/csf/csf.conf)
+    SSH_PORT="$(detect_ssh_port)/tcp; all detected SSH ports preserved"
+    FIREWALL_RULES=$(grep -E '^(TCP6?_IN|TCP6?_OUT|UDP6?_IN|UDP6?_OUT) =' /etc/csf/csf.conf)
     printf '%s\n' "$FIREWALL_RULES"
+    echo "Administrator access: $FIREWALL_ADMIN_ACCESS"
+}
+
+verify_firewall_rules() {
+    local ports="$1" command port rules
+    for command in iptables ip6tables; do
+        [[ "$command" != ip6tables || "$IPV6_ENABLED" == yes ]] || continue
+        rules=$("$command" -S)
+        grep -q -- '^-P INPUT DROP$' <<< "$rules" || die "$command INPUT is not protected"
+        for port in ${ports//,/ }; do
+            grep -Eq -- "^-A INPUT .*--dport ${port} .* -j ACCEPT$|^-A INPUT .*--dport ${port} -j ACCEPT$" <<< "$rules" || \
+                die "Missing effective $command rule for TCP port $port"
+        done
+    done
+}
+
+snapshot_resolver() {
+    [[ -z "$RESOLVER_BACKUP" ]] || return 0
+    RESOLVER_BACKUP=$(mktemp -d /root/zimbra-resolver-backup.XXXXXX)
+    [[ ! -e /etc/resolv.conf && ! -L /etc/resolv.conf ]] || cp -a /etc/resolv.conf "$RESOLVER_BACKUP/resolv.conf"
+    [[ ! -f /etc/dnsmasq.d/zimbra.conf ]] || cp -a /etc/dnsmasq.d/zimbra.conf "$RESOLVER_BACKUP/zimbra.conf"
+    local service
+    for service in systemd-resolved dnsmasq; do
+        systemctl is-enabled "$service" > "$RESOLVER_BACKUP/$service.state" 2>/dev/null || true
+        systemctl is-active --quiet "$service" && touch "$RESOLVER_BACKUP/$service.active"
+        systemctl is-enabled --quiet "$service" && touch "$RESOLVER_BACKUP/$service.enabled"
+    done
+    RESOLVER_PENDING=yes
+}
+
+rollback_resolver() {
+    echo "Restoring previous resolver from $RESOLVER_BACKUP" >&2
+    systemctl stop dnsmasq 2>/dev/null || true
+    rm -f /etc/resolv.conf /etc/dnsmasq.d/zimbra.conf
+    [[ ! -e "$RESOLVER_BACKUP/resolv.conf" && ! -L "$RESOLVER_BACKUP/resolv.conf" ]] || \
+        cp -a "$RESOLVER_BACKUP/resolv.conf" /etc/resolv.conf
+    [[ ! -f "$RESOLVER_BACKUP/zimbra.conf" ]] || cp -a "$RESOLVER_BACKUP/zimbra.conf" /etc/dnsmasq.d/zimbra.conf
+    local service
+    for service in systemd-resolved dnsmasq; do
+        if [[ "$(cat "$RESOLVER_BACKUP/$service.state")" == masked ]]; then
+            systemctl mask "$service" || true
+            continue
+        fi
+        if [[ -f "$RESOLVER_BACKUP/$service.enabled" ]]; then systemctl enable "$service" || true
+        else systemctl disable "$service" 2>/dev/null || true; fi
+        if [[ -f "$RESOLVER_BACKUP/$service.active" ]]; then systemctl restart "$service" || true; fi
+    done
+}
+
+repair_bootstrap_dns() {
+    if ! timeout 15 getent ahostsv4 repo.zimbra.com >/dev/null; then
+        snapshot_resolver
+        echo "Restoring outbound DNS temporarily before APT"
+        chattr -i /etc/resolv.conf 2>/dev/null || true
+        rm -f /etc/resolv.conf
+        printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+        timeout 15 getent ahostsv4 repo.zimbra.com >/dev/null || die "Outbound DNS is unavailable"
+    fi
 }
 
 cleanup() {
     local exit_code=$?
+    trap - EXIT
+    set +e
+    if [[ "$FIREWALL_PENDING" == yes && -f "$FIREWALL_BACKUP/rollback.sh" ]]; then
+        if bash "$FIREWALL_BACKUP/rollback.sh"; then
+            systemctl stop "${FIREWALL_TIMER}.timer" 2>/dev/null
+        else
+            echo "Firewall rollback needs attention: $FIREWALL_BACKUP" >&2
+        fi
+    fi
+    if [[ "$RESOLVER_PENDING" == yes ]]; then rollback_resolver; fi
 
     if [[ -n "$WORKDIR" && -d "$WORKDIR" ]]; then
         rm -rf -- "$WORKDIR"
@@ -810,9 +1099,15 @@ cleanup() {
     if (( exit_code != 0 )); then
         echo "Installation failed (exit $exit_code). Review: $LOG_FILE" >&2
     fi
+    exit "$exit_code"
 }
 
+# Sourcing defines helpers only, for isolated regression tests.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then return 0; fi
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 # ------------------------------------------------------------
 # Arguments & Environment Pre-check
@@ -825,8 +1120,6 @@ for arg in "$@"; do
     fi
 done
 
-detect_ubuntu_version
-
 while [[ $# -gt 0 ]]; do
     case "$1" in
 
@@ -836,6 +1129,16 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
 
+        --admin-cidr)
+            require_value "$1" "$#" "${2:-}"
+            ADMIN_CIDR="$2"
+            shift 2
+            ;;
+        --local-ip)
+            require_value "$1" "$#" "${2:-}"
+            LOCAL_IP="$2"
+            shift 2
+            ;;
         --ip)
             require_value "$1" "$#" "${2:-}"
             SERVER_IP="$2"
@@ -901,7 +1204,14 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+detect_ubuntu_version
+DOMAIN="${DOMAIN,,}"
+MAIL_HOST="${MAIL_HOST,,}"
 ADMIN_PASS="${ADMIN_PASS:-${ZIMBRA_ADMIN_PASSWORD:-}}"
+unset ZIMBRA_ADMIN_PASSWORD
+[[ "$ONLY_FIREWALL" != yes || "$CONFIGURE_FIREWALL" != no ]] || die "Conflicting firewall options"
+[[ -z "$LOCAL_IP" ]] || is_valid_ipv4 "$LOCAL_IP" || die "Invalid local IPv4"
+
 
 if [[ "${ONLY_FIREWALL:-no}" != "yes" ]]; then
     [[ -n "$DOMAIN" ]] || die "--domain required"
@@ -929,6 +1239,8 @@ fi
 # ------------------------------------------------------------
 
 [[ "$EUID" -eq 0 ]] || die "Run script as root"
+exec 9>/root/.zimbra-auto-install.lock
+flock -n 9 || die "Another Zimbra installer is already running"
 
 mkdir -p "$(dirname "$LOG_FILE")"
 touch "$LOG_FILE"
@@ -951,13 +1263,16 @@ echo "Detected OS     : Ubuntu ${VERSION_ID} (${UBUNTU_CODENAME})"
 echo "Architecture    : ${ARCH}"
 echo "ZCS Version     : ${ZCS_VERSION} GA (${ZCS_BUILD})"
 
-# Set Asia/Ho_Chi_Minh (UTC+07:00 by default) and synchronize the actual clock
-# before timestamps are logged or signed APT metadata is validated.
-synchronize_system_clock
-
-if [[ "${ONLY_FIREWALL:-no}" == "yes" ]]; then
-    log "Configuring CSF firewall only"
+if [[ "$ONLY_FIREWALL" == yes ]]; then
+    repair_bootstrap_dns
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y ca-certificates curl perl python3 iptables ipset iproute2 \
+        libwww-perl libio-socket-ssl-perl libnet-libidn-perl libsocket6-perl rsyslog
+    systemctl enable --now rsyslog
+    prepare_firewall_assets
     configure_csf
+    RESOLVER_PENDING=no
     log "CSF firewall configuration completed successfully"
     exit 0
 fi
@@ -1018,6 +1333,9 @@ fi
 # Packages
 # ------------------------------------------------------------
 
+# Recover DNS before any APT request; preserve a rollback copy.
+repair_bootstrap_dns
+synchronize_system_clock
 log "Install OS dependencies"
 
 export DEBIAN_FRONTEND=noninteractive
@@ -1054,6 +1372,7 @@ SYSTEM_PACKAGES=(
     openssl
     pax
     perl
+    python3
     rsyslog
     sqlite3
     sysstat
@@ -1082,18 +1401,17 @@ fi
 
 [[ "$ADMIN_PASS" != *$'\n'* && "$ADMIN_PASS" != *$'\r'* ]] || \
     die "Admin password must be a single line"
+install -m 600 /dev/null "$RESULT_FILE"
+printf 'Installation in progress\nAdmin: %s\nPassword: %s\n' "$ADMIN_EMAIL" "$ADMIN_PASS" > "$RESULT_FILE"
 
-# A previous failed run may have left resolv.conf pointing at a local dnsmasq
-# that is no longer running or unable to resolve outbound domains.
-# Detect and repair this condition before reaching the repository check.
-if ! dig +short +time=3 +tries=2 repo.zimbra.com >/dev/null 2>&1; then
-    echo "WARNING: Outbound DNS resolution is failing for repo.zimbra.com."
-    echo "         Temporarily restoring public DNS (1.1.1.1, 8.8.8.8) for package downloads."
-    chattr -i /etc/resolv.conf 2>/dev/null || true
-    printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
-    systemctl stop dnsmasq 2>/dev/null || true
-    rm -f /etc/dnsmasq.d/zimbra.conf
+# Resolve the local address separately from the externally advertised address.
+if [[ -z "$LOCAL_IP" ]]; then
+    LOCAL_IP=$(ip -4 route get 1.1.1.1 | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')
 fi
+is_valid_ipv4 "$LOCAL_IP" || die "Cannot detect local IPv4; use --local-ip"
+ip -o -4 addr show | awk '{split($4,a,"/"); print a[1]}' | grep -Fxq "$LOCAL_IP" || \
+    die "--local-ip must belong to a local interface"
+[[ -z "$ADMIN_CIDR" ]] || is_valid_admin_network "$ADMIN_CIDR" || die "Invalid administrator IP/CIDR"
 
 # Fail early with a clear URL if the external packages required by proxy are
 # not reachable. The bundled installer otherwise hides this detail in a log.
@@ -1101,12 +1419,21 @@ check_zimbra_repository
 
 # Download and validate the complete installer before changing host services.
 prepare_installer
+if [[ "$CONFIGURE_FIREWALL" == yes ]]; then prepare_firewall_assets; fi
+
+log "Check conflicting mail/web services"
+for service in postfix exim4 nginx apache2; do
+    if systemctl is-active --quiet "$service"; then
+        die "Conflicting service $service is active; use a clean dedicated Zimbra server"
+    fi
+done
 
 log "Configuration"
 
 echo "Domain     : $DOMAIN"
 echo "Hostname   : $FQDN"
-echo "IP         : $SERVER_IP"
+echo "Public IP  : $SERVER_IP"
+echo "Local IP   : $LOCAL_IP"
 echo "Admin      : $ADMIN_EMAIL"
 echo "Installer  : $ZCS_TGZ"
 
@@ -1121,7 +1448,7 @@ hostnamectl set-hostname "$FQDN"
 # Keep one deterministic mapping for this server and retain a recoverable backup.
 cp -a /etc/hosts "/etc/hosts.pre-zimbra.$(date +%Y%m%d%H%M%S)"
 HOSTS_TMP=$(mktemp /etc/.hosts.zimbra.XXXXXX)
-awk -v fqdn="$FQDN" -v short="$MAIL_HOST" -v server_ip="$SERVER_IP" '
+awk -v fqdn="$FQDN" -v short="$MAIL_HOST" -v server_ip="$LOCAL_IP" '
     {
         # Drop lines whose IP is 127.0.1.1 or the target server IP entirely.
         if ($1 == "127.0.1.1" || $1 == server_ip) { next }
@@ -1146,7 +1473,7 @@ rm -f -- "$HOSTS_TMP"
 grep -qE '^127\.0\.0\.1([[:space:]]|$)' /etc/hosts || \
     echo "127.0.0.1 localhost" >> /etc/hosts
 
-echo "$SERVER_IP $FQDN $MAIL_HOST" >> /etc/hosts
+echo "$LOCAL_IP $FQDN $MAIL_HOST" >> /etc/hosts
 
 echo
 cat /etc/hosts
@@ -1168,30 +1495,6 @@ log "Prepare resolver"
 chattr -i /etc/resolv.conf 2>/dev/null || true
 
 # ------------------------------------------------------------
-# Remove conflicting services
-# ------------------------------------------------------------
-
-log "Remove conflicting mail/web services"
-
-su - zimbra -c "zmcontrol stop" 2>/dev/null || true
-
-for service in postfix exim4 nginx apache2; do
-    systemctl disable --now "$service" 2>/dev/null || true
-done
-
-apt-get purge -y \
-    postfix \
-    postfix-base \
-    'exim4*' \
-    nginx \
-    nginx-common \
-    apache2 \
-    apache2-bin \
-    apache2-data \
-    resolvconf \
-    2>/dev/null || true
-
-# ------------------------------------------------------------
 # DNSMASQ
 #
 # Provides local A + MX before public DNS is pointed.
@@ -1199,6 +1502,7 @@ apt-get purge -y \
 # ------------------------------------------------------------
 
 log "Configure local DNS"
+snapshot_resolver
 
 BACKUP_SUFFIX="pre-zimbra.$(date +%Y%m%d%H%M%S)"
 [[ ! -e /etc/dnsmasq.d/zimbra.conf ]] || \
@@ -1211,24 +1515,18 @@ domain-needed
 bogus-priv
 no-hosts
 no-resolv
-local=/${DOMAIN}/
 
 server=1.1.1.1
 server=8.8.8.8
 
-address=/${FQDN}/${SERVER_IP}
-address=/localhost/127.0.0.1
+host-record=${FQDN},${LOCAL_IP}
+host-record=localhost,127.0.0.1
 mx-host=${DOMAIN},${FQDN},10
 EOF
 
-# Disable systemd-resolved and resolvconf on both Ubuntu 22.04 and 24.04.
-# systemd-resolved occupies port 53 on 127.0.0.53, synthesizes local hostname lookups,
-# and conflicts with dnsmasq listening on 127.0.0.1:53.
-systemctl disable --now systemd-resolved 2>/dev/null || true
-systemctl stop systemd-resolved 2>/dev/null || true
-systemctl mask systemd-resolved 2>/dev/null || true
-systemctl disable --now resolvconf 2>/dev/null || true
-systemctl stop resolvconf 2>/dev/null || true
+# Validate before switching the system resolver. systemd-resolved can keep
+# listening on 127.0.0.53 while dnsmasq binds only 127.0.0.1.
+dnsmasq --test
 
 chattr -i /etc/resolv.conf 2>/dev/null || true
 rm -f /etc/resolv.conf
@@ -1268,7 +1566,7 @@ echo
 
 A_RESULT=$(dig +short "$FQDN" | tail -1)
 
-[[ "$A_RESULT" == "$SERVER_IP" ]] || {
+[[ "$A_RESULT" == "$LOCAL_IP" ]] || {
     echo "Diagnostic information:"
     echo "Testing direct query to 127.0.0.1:"
     dig +short @127.0.0.1 "$FQDN" || true
@@ -1276,17 +1574,24 @@ A_RESULT=$(dig +short "$FQDN" | tail -1)
     systemctl status dnsmasq --no-pager || true
     echo "/etc/dnsmasq.d/zimbra.conf content:"
     cat /etc/dnsmasq.d/zimbra.conf || true
-    die "A resolution failed: expected $SERVER_IP got $A_RESULT"
+    die "A resolution failed: expected $LOCAL_IP got $A_RESULT"
 }
 
 MX_RESULT=$(dig +short MX "$DOMAIN")
 
-grep -qi "$FQDN" <<< "$MX_RESULT" || {
+awk -v fqdn="${FQDN,,}." 'tolower($2)==fqdn {found=1} END {exit !found}' <<< "$MX_RESULT" || {
     echo "Diagnostic information:"
     echo "Testing direct MX query to 127.0.0.1:"
     dig +short MX @127.0.0.1 "$DOMAIN" || true
     die "MX resolution failed"
 }
+
+# Commit only a functioning resolver; retain the backup for manual recovery.
+getent ahostsv4 repo.zimbra.com >/dev/null || die "Outbound DNS failed after local DNS setup"
+RESOLVER_PENDING=no
+echo "Public DNS (configure A/MX/PTR/SPF/DKIM/DMARC separately):"
+dig @1.1.1.1 +short +time=3 +tries=1 "$FQDN" A || true
+dig @1.1.1.1 +short +time=3 +tries=1 "$DOMAIN" MX || true
 
 # ------------------------------------------------------------
 # Check ports
@@ -1296,7 +1601,7 @@ log "Port pre-check"
 
 PORT_CONFLICTS=$(
     ss -lntp |
-    grep -E ':(25|80|443|465|587|7071)[[:space:]]' || true
+    grep -E ':(25|80|110|143|389|443|465|587|993|995|7025|7071|7072|7073|7110|7143|7780|7993|7995|8080|8443|11211)[[:space:]]' || true
 )
 
 if [[ -n "$PORT_CONFLICTS" ]]; then
@@ -1341,6 +1646,7 @@ log "Create software installer configuration"
 
 SOFTWARE_CONFIG_FILE="/root/zimbra-software-install.conf"
 
+install -m 600 /dev/null "$SOFTWARE_CONFIG_FILE"
 cat > "$SOFTWARE_CONFIG_FILE" <<EOF
 INSTALL_PACKAGES="$ZCS_PACKAGES"
 USE_ZIMBRA_PACKAGE_SERVER="yes"
@@ -1402,6 +1708,7 @@ log "Generate Zimbra setup configuration"
 CONFIG_FILE="/root/zimbra-setup.conf"
 CONFIG_ADMIN_PASS=$(escape_config_value "$ADMIN_PASS")
 
+install -m 600 /dev/null "$CONFIG_FILE"
 cat > "$CONFIG_FILE" <<EOF
 AVDOMAIN="$DOMAIN"
 AVUSER="$ADMIN_EMAIL"
@@ -1473,7 +1780,7 @@ SMTPHOST="$FQDN"
 SMTPNOTIFY="yes"
 SMTPSOURCE="$ADMIN_EMAIL"
 
-SNMPNOTIFY="yes"
+SNMPNOTIFY="no"
 SNMPTRAPHOST="$FQDN"
 
 SPELLURL="http://${FQDN}:7780/aspell.php"
@@ -1535,10 +1842,12 @@ STATUS=$(
 echo "$VERSION"
 echo
 echo "$STATUS"
+[[ "$VERSION" == *"${ZCS_VERSION}.GA"* || "$VERSION" == *"${ZCS_VERSION}_GA"* ]] || \
+    die "Installed Zimbra version differs from the verified installer: $VERSION"
 
 if grep -qiE 'Stopped|not running' <<< "$STATUS"; then
     echo
-    echo "WARNING: At least one Zimbra service is not running."
+    die "At least one Zimbra service is not running"
 fi
 
 # ------------------------------------------------------------
@@ -1591,7 +1900,7 @@ fi
 RESULT_FILE="/root/ZIMBRA-INSTALL-INFO.txt"
 
 install -m 600 /dev/null "$RESULT_FILE"
-print_install_summary > "$RESULT_FILE"
+print_install_summary --include-password > "$RESULT_FILE"
 
 log "Installation completed"
 print_install_summary

@@ -1,6 +1,6 @@
 # Hướng dẫn sử dụng các script
 
-Kho script: [phongdh262/tools](https://github.com/phongdh262/tools), nhánh `Phondh`.
+Kho script: [phongdh262/tools](https://github.com/phongdh262/tools), nhánh `main` (script cài Zimbra tự nhận diện OS).
 
 ## Danh sách script
 
@@ -26,86 +26,123 @@ chmod +x TEN-SCRIPT.sh
 
 Không dùng `source` hoặc `. script.sh`; hãy chạy script trực tiếp bằng Bash.
 
-## 1. Cài Zimbra tự động
+## 1. Cài Zimbra tự động trên Ubuntu 22.04 / 24.04
+
+Dùng `install-zimbra10.sh` cho cài mới. Script tự nhận diện Ubuntu, chọn đúng archive Zimbra **10.1.20** và xác minh SHA-256 trước khi giải nén.
+
+| Ubuntu | Build | Release |
+|---|---|---|
+| 22.04 x86_64 | `0326.UBUNTU22_64.20260821115118` | `zimbra-10.1.20` |
+| 24.04 x86_64 | `0326.UBUNTU24_64.20260821120929` | `zimbra-10.1.20-u24` |
 
 ### Yêu cầu
 
-- VPS mới, kiến trúc `x86_64`, chạy Ubuntu 22.04.
-- Chạy bằng `root`.
-- Tối thiểu khoảng 8 GB RAM và đủ dung lượng trống.
-- FQDN mặc định là `mail.<domain>`.
-- Không chạy trên máy đã có `/opt/zimbra` hoặc một Zimbra đang hoạt động.
-- Nên cấu hình PTR/rDNS của IP VPS về FQDN mail tại nhà cung cấp VPS.
+- VPS mới, dành riêng cho Zimbra, có systemd và quyền root.
+- Tối thiểu khoảng 8 GB RAM, 20 GB trống; cần thêm dung lượng cho mailbox và backup thực tế.
+- Kết nối tới Ubuntu APT, Zimbra repository và GitHub Releases.
+- Không có một Zimbra đang hoạt động trong `/opt/zimbra`; script không nâng cấp hoặc xóa dữ liệu mail đang có.
+- Nếu có Nginx/Apache/Postfix/Exim đang chạy, script dừng để tránh làm hỏng dịch vụ khác.
 
 ### Cài đặt cơ bản
 
 ```bash
-wget --no-cache -O install-zimbra.sh \
-  "https://raw.githubusercontent.com/phongdh262/tools/Phondh/install-zimbra.sh"
-chmod +x install-zimbra.sh
-sudo ./install-zimbra.sh --domain example.com
+wget --no-cache -O install-zimbra10.sh \
+  "https://raw.githubusercontent.com/phongdh262/tools/main/install-zimbra10.sh"
+chmod +x install-zimbra10.sh
+sudo ./install-zimbra10.sh --domain example.com
 ```
 
-Script tự động:
+Nếu không có `csf.conf` cạnh script, script tự tải đúng bản mẫu được cố định theo commit và SHA-256. File mẫu cục bộ phải khớp phiên bản script; nếu sửa file mẫu, kiểm tra lại thay đổi và checksum trong script trước khi sử dụng.
 
-- Phát hiện IPv4 công khai của VPS.
-- Tạo mật khẩu admin mạnh.
-- Đặt hostname `mail.example.com` và múi giờ `Asia/Ho_Chi_Minh`.
-- Đồng bộ/kiểm tra đồng hồ hệ thống trước khi dùng APT.
-- Tải và kiểm tra SHA-256 bộ cài Zimbra.
-- Cài, cấu hình và hậu kiểm Zimbra.
-- Tạo đúng tài khoản Spam, Ham và Virus Quarantine trên domain chính.
-- Tạo DKIM và hiển thị bản ghi TXT cần cấu hình.
-- Cấu hình UFW, bao gồm SSH, Admin `7071` và các cổng mail/web cần thiết.
-
-Kết quả cuối hiển thị:
-
-- URL, username và password đăng nhập Admin.
-- Bản ghi DKIM.
-- Các rule UFW thực tế đã allow.
-- Trạng thái dịch vụ Zimbra.
-
-Thông tin triển khai được lưu tại:
-
-```text
-/root/ZIMBRA-INSTALL-INFO.txt
-```
-
-Log đầy đủ:
-
-```text
-/root/zimbra-auto-install.log
-```
-
-Hai file trên chứa thông tin nhạy cảm và chỉ nên cho `root` đọc.
-
-### Tùy chọn thường dùng
+Archive lớn được lưu trong **GitHub Releases**, còn checksum được lưu cả trong git và release. Kiểm tra bộ Ubuntu 24.04 tải thủ công:
 
 ```bash
-# Dùng hostname zimbra.example.com thay vì mail.example.com
-sudo ./install-zimbra.sh --domain example.com --mail-host zimbra
+sha256sum -c zcs-10.1.20_GA_0326.UBUNTU24_64.20260821120929.tgz.sha256
+```
 
-# Chỉ định IP thay vì tự phát hiện
-sudo ./install-zimbra.sh --domain example.com --ip 203.0.113.10
+### Quyền truy cập firewall
 
-# Đọc mật khẩu admin từ file một dòng
-chmod 600 /root/zimbra-admin-password
-sudo ./install-zimbra.sh \
+Script cài CSF **15.10** từ Aetherinox khi máy chưa có CSF, xác minh SHA-256 và kiểm tra tương thích trước khi chuyển từ UFW. Nếu CSF đã có sẵn, script giữ bản cài hiện tại; quản trị viên vẫn cần theo dõi bản vá của CSF đang sử dụng. Tự cập nhật CSF qua mạng được tắt trong mẫu để tránh thay đổi phiên bản ngoài kiểm soát.
+
+- Mở công khai TCP `25,80,443,465,587,993,995` và các cổng SSH phát hiện được.
+- Cổng Admin `7071` chỉ mở cho `--admin-cidr`; nếu không truyền, dùng IP của phiên SSH hiện tại khi biến `SSH_CONNECTION` được giữ lại.
+- Nếu không xác định được IP quản trị, dùng SSH tunnel hoặc truyền `--admin-cidr`. Không tự mở Admin cho toàn Internet.
+- Không mở công khai backend `8443`, FTP, DNS hay cổng giám sát trong danh sách cổng mặc định.
+- Giữ lại các allow rule CSF hiện có ngoài rule quản trị do script tạo. Quản trị viên cần kiểm tra các rule tự cấu hình này nếu muốn siết toàn bộ chính sách truy cập.
+- IPv6 được cấu hình tương ứng khi IPv6 đang bật trên máy.
+- Cấu hình và rules cũ được sao lưu tại `/root/zimbra-firewall-backup.*`. Khi lỗi, script khôi phục; watchdog độc lập cũng thực hiện khôi phục nếu giao dịch không hoàn tất trong 10 phút. Các kiểm tra tự động xác minh rules và DNS, không thay thế kiểm tra SSH từ máy bên ngoài.
+
+Ví dụ giới hạn quản trị:
+
+```bash
+sudo ./install-zimbra10.sh --domain example.com --admin-cidr 203.0.113.25/32
+```
+
+Dùng SSH tunnel khi không mở trực tiếp cổng quản trị:
+
+```bash
+ssh -L 17071:127.0.0.1:7071 root@MAIL_SERVER_IP
+# Truy cập https://localhost:17071 trên máy cá nhân
+```
+
+### VPS có NAT và DNS
+
+```bash
+sudo ./install-zimbra10.sh \
   --domain example.com \
+  --ip 203.0.113.10 \
+  --local-ip 10.0.0.10 \
+  --admin-cidr 203.0.113.25/32
+```
+
+`--ip` là IP công khai; `--local-ip` phải có trên interface của VPS và được dùng cho hostname/DNS nội bộ. Nếu không truyền, script tự phát hiện từng địa chỉ.
+
+DNS nội bộ chỉ khai báo hostname mail và MX cục bộ, tiếp tục phân giải SPF/DKIM/DMARC và các tên miền con từ DNS công khai. Bạn vẫn phải tạo A/MX/SPF/DKIM/DMARC tại DNS provider, đặt PTR/rDNS tại nhà cung cấp VPS và cấu hình port forwarding/cloud firewall nếu có NAT. Bộ cài hiển thị bản ghi DKIM sau khi hoàn thành.
+
+Resolver được kiểm tra trước APT, sao lưu trước khi thay đổi, kiểm tra cấu hình dnsmasq trước khi chuyển, và khôi phục nếu chuyển resolver thất bại. Bản sao nằm tại `/root/zimbra-resolver-backup.*`.
+
+### Các tùy chọn khác
+
+```bash
+# Mật khẩu tự sinh nếu không truyền file; tránh truyền mật khẩu qua command line.
+chmod 600 /root/zimbra-admin-password
+sudo ./install-zimbra10.sh --domain example.com \
   --password-file /root/zimbra-admin-password
 
-# Không thay đổi UFW
-sudo ./install-zimbra.sh --domain example.com --skip-firewall
+# Chỉ sửa firewall trên máy đã cài Zimbra; không đổi hostname/múi giờ.
+sudo ./install-zimbra10.sh --only-firewall --admin-cidr 203.0.113.25/32
 
-# Xem toàn bộ tùy chọn
-./install-zimbra.sh --help
+# Không cấu hình CSF
+sudo ./install-zimbra10.sh --domain example.com --skip-firewall
+
+# Archive tùy chọn phải có checksum chỉ định rõ
+sudo ./install-zimbra10.sh --domain example.com \
+  --installer /root/zimbra.tgz --sha256 EXPECTED_SHA256
+
+./install-zimbra10.sh --help
 ```
 
-Sau khi cài xong, đăng nhập Admin tại:
+LFD theo dõi SMTP AUTH tại `/var/log/zimbra.log` và các đăng nhập Zimbra thất bại có IP hợp lệ tại `/opt/zimbra/log/audit.log`. Quy tắc Zimbra chặn tạm 300 giây sau 5 lần thất bại; không tin địa chỉ forwarded do client cung cấp và không chặn loopback. Với proxy bên ngoài, cần kiểm tra địa chỉ ghi trong log và cấu hình trust riêng trước khi dựa vào LFD. Kiểm tra thực tế đăng nhập sai, log `/var/log/lfd.log`, và cơ chế mở khóa từ console của VPS.
 
-```text
-https://mail.example.com:7071
+### Kết quả và xử lý lỗi
+
+- Mật khẩu được lưu trong `/root/ZIMBRA-INSTALL-INFO.txt`, quyền `600`; phần tổng kết thông thường không in mật khẩu vào log.
+- `/root/zimbra-setup.conf` cũng chứa thông tin nhạy cảm, quyền `600`; bảo vệ cả hai file và backup của chúng.
+- Log cài đặt: `/root/zimbra-auto-install.log`. Không chia sẻ file cấu hình/mật khẩu cùng log hỗ trợ.
+- SNMP notifications mặc định tắt. Kiểm tra phiên bản dịch vụ sau khi cài; không báo thành công nếu dịch vụ dừng hoặc phiên bản khác archive đã chọn.
+- Hai lần chạy đồng thời bị chặn bằng khóa tiến trình.
+- Nếu chỉ bước firewall lỗi, dùng `--only-firewall` để chạy lại. Nếu Zimbra đã cài package nhưng setup thất bại, giữ nguyên dữ liệu và xem log; script không tự xóa `/opt/zimbra` hay chạy lại setup trên một hệ thống chưa xác định trạng thái.
+- TLS công khai và việc gia hạn certificate vẫn dùng script SSL ở phần tiếp theo; bộ cài này không tự cấp certificate.
+
+Kiểm tra hồi quy trước khi sửa script:
+
+```bash
+bash -n install-zimbra10.sh
+shellcheck install-zimbra10.sh
+python3 -m unittest discover -s tests -v
 ```
+
+Các bài kiểm tra này mô phỏng thành phần độc lập và không cài phần mềm hay thay firewall của máy chạy kiểm tra. Trước production, kiểm thử cài mới trên VPS Ubuntu 22.04 và 24.04, gửi/nhận mail, TLS, SSH và reboot thực tế.
 
 ## 2. Cài SSL Let's Encrypt tự động cho Zimbra
 

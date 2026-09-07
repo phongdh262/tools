@@ -39,3 +39,7 @@ yarn-error.log*
 /.wrangler/
 /outputs/
 /work/
+
+# Python regression tests
+__pycache__/
+*.pyc

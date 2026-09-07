@@ -6,20 +6,20 @@ set -Eeuo pipefail
 umask 022
 
 # ============================================================
-# Zimbra 10.1.19 FOSS Automated Installer
+# Zimbra 10.1.20 FOSS Automated Installer
 # OS    : Ubuntu 24.04
-# Build : zcs-10.1.19_GA_0326.UBUNTU24_64.20260707135412
+# Build : zcs-10.1.20_GA_0326.UBUNTU24_64.20260821120929
 #
 # Usage:
 # bash install-zimbra-u24.sh \
 #   --domain example.com
 # ============================================================
 
-readonly ZCS_VERSION="10.1.19"
-readonly ZCS_BUILD="0326.UBUNTU24_64.20260707135412"
+readonly ZCS_VERSION="10.1.20"
+readonly ZCS_BUILD="0326.UBUNTU24_64.20260821120929"
 readonly ZCS_ARCHIVE="zcs-${ZCS_VERSION}_GA_${ZCS_BUILD}.tgz"
 readonly DEFAULT_ZCS_URL="https://github.com/phongdh262/tools/releases/download/zimbra-${ZCS_VERSION}-u24/${ZCS_ARCHIVE}"
-readonly DEFAULT_ZCS_SHA256="f2dfd5a705b0dc6fa292431f417d77e8e62b96db64e23e498553e2eb14451d45"
+readonly DEFAULT_ZCS_SHA256="07bbd4662e3f5211986c71b68cf2fe28b2185bd3c796ad8a69c8c10a6ef2fa69"
 readonly ZCS_PACKAGES="zimbra-core zimbra-ldap zimbra-logger zimbra-mta zimbra-snmp zimbra-store zimbra-apache zimbra-spell zimbra-memcached zimbra-proxy"
 readonly UFW_PUBLIC_TCP_PORTS="25 80 443 465 587 993 995"
 
@@ -1256,7 +1256,7 @@ SMTPHOST="$FQDN"
 SMTPNOTIFY="yes"
 SMTPSOURCE="$ADMIN_EMAIL"
 
-SNMPNOTIFY="yes"
+SNMPNOTIFY="no"
 SNMPTRAPHOST="$FQDN"
 
 SPELLURL="http://${FQDN}:7780/aspell.php"
