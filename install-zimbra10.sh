@@ -71,6 +71,7 @@ Optional overrides:
 
 Optional:
   --skip-firewall           Do not configure or enable CSF firewall
+  --only-firewall           Only configure CSF firewall (useful when Zimbra is already installed)
   --mail-host NAME          Hostname prefix (default: mail)
   --timezone ZONE           Timezone (default: Asia/Ho_Chi_Minh)
   --installer PATH_OR_URL   Local archive or download URL
@@ -692,14 +693,38 @@ configure_csf() {
         log "Downloading and installing ConfigServer Security & Firewall (CSF)"
         mkdir -p /usr/src
 
-        if command -v wget >/dev/null 2>&1; then
-            wget -q -O "$csf_tgz" "https://download.configserver.dev/csf.tgz" || \
-                die "Failed to download CSF via wget"
-        elif command -v curl >/dev/null 2>&1; then
-            curl -fSL -o "$csf_tgz" "https://download.configserver.dev/csf.tgz" || \
-                die "Failed to download CSF via curl"
-        else
-            die "Neither wget nor curl is available to download CSF"
+        local csf_url="https://download.configserver.dev/csf.tgz"
+        local csf_ready=0
+
+        # Check if a valid csf.tgz was already downloaded or placed locally
+        for existing_archive in "/tmp/csf.tgz" "./csf.tgz" "$csf_tgz"; do
+            if [[ -f "$existing_archive" ]] && tar -tzf "$existing_archive" >/dev/null 2>&1; then
+                echo "Found valid existing CSF archive: $existing_archive"
+                if [[ "$existing_archive" != "$csf_tgz" ]]; then
+                    cp -f "$existing_archive" "$csf_tgz"
+                fi
+                csf_ready=1
+                break
+            fi
+        done
+
+        if (( csf_ready == 0 )); then
+            echo "Downloading CSF from $csf_url..."
+            if command -v curl >/dev/null 2>&1; then
+                if curl -fSL --retry 3 --connect-timeout 15 -A "Mozilla/5.0" -o "$csf_tgz" "$csf_url"; then
+                    csf_ready=1
+                fi
+            fi
+
+            if (( csf_ready == 0 )) && command -v wget >/dev/null 2>&1; then
+                if wget --tries=3 --timeout=15 -U "Mozilla/5.0" -O "$csf_tgz" "$csf_url"; then
+                    csf_ready=1
+                fi
+            fi
+        fi
+
+        if (( csf_ready == 0 )) || ! tar -tzf "$csf_tgz" >/dev/null 2>&1; then
+            die "Failed to download or verify valid CSF archive from $csf_url"
         fi
 
         rm -rf /usr/src/csf
@@ -728,7 +753,10 @@ configure_csf() {
     local csf_conf_url="https://raw.githubusercontent.com/phongdh262/tools/main/csf.conf"
     local fallback_url="https://raw.githubusercontent.com/phongdh262/tools/Phondh/csf.conf"
 
-    if curl -fSL -s --connect-timeout 10 -o /etc/csf/csf.conf "$csf_conf_url" 2>/dev/null; then
+    if [[ -n "$script_dir" && -f "$local_csf_conf" ]]; then
+        echo "Using local csf.conf template: $local_csf_conf"
+        cp -f "$local_csf_conf" /etc/csf/csf.conf
+    elif curl -fSL -s --connect-timeout 10 -o /etc/csf/csf.conf "$csf_conf_url" 2>/dev/null; then
         echo "Downloaded custom csf.conf from $csf_conf_url"
     elif curl -fSL -s --connect-timeout 10 -o /etc/csf/csf.conf "$fallback_url" 2>/dev/null; then
         echo "Downloaded custom csf.conf from $fallback_url"
@@ -736,9 +764,6 @@ configure_csf() {
         echo "Downloaded custom csf.conf from $csf_conf_url via wget"
     elif wget -q -O /etc/csf/csf.conf "$fallback_url" 2>/dev/null; then
         echo "Downloaded custom csf.conf from $fallback_url via wget"
-    elif [[ -n "$script_dir" && -f "$local_csf_conf" ]]; then
-        echo "Using local csf.conf template: $local_csf_conf"
-        cp -f "$local_csf_conf" /etc/csf/csf.conf
     fi
 
     [[ -f /etc/csf/csf.conf ]] || die "Failed to download /etc/csf/csf.conf from git repository"
@@ -860,6 +885,11 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
 
+        --only-firewall|--firewall-only)
+            ONLY_FIREWALL="yes"
+            shift
+            ;;
+
         -h|--help)
             usage
             exit 0
@@ -873,19 +903,26 @@ done
 
 ADMIN_PASS="${ADMIN_PASS:-${ZIMBRA_ADMIN_PASSWORD:-}}"
 
-[[ -n "$DOMAIN" ]] || die "--domain required"
-is_valid_domain "$DOMAIN" || die "Invalid domain: $DOMAIN"
-[[ -z "$SERVER_IP" ]] || is_valid_ipv4 "$SERVER_IP" || die "Invalid IPv4: $SERVER_IP"
-[[ "$MAIL_HOST" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]] || \
-    die "Invalid mail host: $MAIL_HOST"
-[[ "$TIMEZONE" =~ ^[a-zA-Z0-9_+-]+(/[a-zA-Z0-9_+-]+)+$ ]] || \
-    die "Invalid timezone: $TIMEZONE"
-[[ "$ZCS_SHA256" =~ ^[a-f0-9]{64}$ ]] || die "Invalid SHA-256 value"
-[[ "$ADMIN_PASS" != *$'\n'* && "$ADMIN_PASS" != *$'\r'* ]] || \
-    die "Admin password must be a single line"
+if [[ "${ONLY_FIREWALL:-no}" != "yes" ]]; then
+    [[ -n "$DOMAIN" ]] || die "--domain required"
+    is_valid_domain "$DOMAIN" || die "Invalid domain: $DOMAIN"
+    [[ -z "$SERVER_IP" ]] || is_valid_ipv4 "$SERVER_IP" || die "Invalid IPv4: $SERVER_IP"
+    [[ "$MAIL_HOST" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]] || \
+        die "Invalid mail host: $MAIL_HOST"
+    [[ "$TIMEZONE" =~ ^[a-zA-Z0-9_+-]+(/[a-zA-Z0-9_+-]+)+$ ]] || \
+        die "Invalid timezone: $TIMEZONE"
+    [[ "$ZCS_SHA256" =~ ^[a-f0-9]{64}$ ]] || die "Invalid SHA-256 value"
+    [[ "$ADMIN_PASS" != *$'\n'* && "$ADMIN_PASS" != *$'\r'* ]] || \
+        die "Admin password must be a single line"
 
-FQDN="${MAIL_HOST}.${DOMAIN}"
-ADMIN_EMAIL="admin@${DOMAIN}"
+    FQDN="${MAIL_HOST}.${DOMAIN}"
+    ADMIN_EMAIL="admin@${DOMAIN}"
+else
+    DOMAIN="${DOMAIN:-localhost}"
+    MAIL_HOST="${MAIL_HOST:-mail}"
+    FQDN="${MAIL_HOST}.${DOMAIN}"
+    ADMIN_EMAIL="admin@${DOMAIN}"
+fi
 
 # ------------------------------------------------------------
 # Root
@@ -918,6 +955,13 @@ echo "ZCS Version     : ${ZCS_VERSION} GA (${ZCS_BUILD})"
 # before timestamps are logged or signed APT metadata is validated.
 synchronize_system_clock
 
+if [[ "${ONLY_FIREWALL:-no}" == "yes" ]]; then
+    log "Configuring CSF firewall only"
+    configure_csf
+    log "CSF firewall configuration completed successfully"
+    exit 0
+fi
+
 # ------------------------------------------------------------
 # Check existing Zimbra
 # ------------------------------------------------------------
@@ -947,7 +991,7 @@ if [[ -d /opt/zimbra ]]; then
         su - zimbra -c 'zmcontrol -v' 2>/dev/null || true
     fi
 
-    die "/opt/zimbra already exists. Refusing fresh installation."
+    die "/opt/zimbra already exists. Refusing fresh installation. (If you only want to finish CSF firewall setup, run: sudo bash $0 --only-firewall)"
 fi
 
 # ------------------------------------------------------------
@@ -1128,6 +1172,8 @@ chattr -i /etc/resolv.conf 2>/dev/null || true
 # ------------------------------------------------------------
 
 log "Remove conflicting mail/web services"
+
+su - zimbra -c "zmcontrol stop" 2>/dev/null || true
 
 for service in postfix exim4 nginx apache2; do
     systemctl disable --now "$service" 2>/dev/null || true
