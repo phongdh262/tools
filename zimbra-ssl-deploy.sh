@@ -62,7 +62,7 @@ cleanup() {
   fi
 
   case "$TEMP_DIR" in
-    /var/tmp/zimbra-ssl-deploy.*)
+    /opt/zimbra/*/ssl-deploy-stage.* | /var/tmp/zimbra-ssl-deploy.* | /tmp/ssl-deploy-stage.* | /tmp/zimbra-ssl-deploy.*)
       rm -rf -- "$TEMP_DIR"
       ;;
   esac
@@ -157,8 +157,17 @@ pem_certificate_count() {
 }
 
 make_temp_dir() {
-  TEMP_DIR="$(mktemp -d /var/tmp/zimbra-ssl-deploy.XXXXXX)"
-  chmod 700 "$TEMP_DIR"
+  local base_tmp="/opt/zimbra/ssl/zimbra"
+  if [[ ! -d "$base_tmp" ]]; then
+    base_tmp="/opt/zimbra/data/tmp"
+  fi
+  if [[ ! -d "$base_tmp" ]]; then
+    base_tmp="/tmp"
+  fi
+  install -d -o zimbra -g zimbra -m 755 "$base_tmp" 2>/dev/null || true
+  TEMP_DIR="$(mktemp -d "${base_tmp}/ssl-deploy-stage.XXXXXX")"
+  chown -R zimbra:zimbra "$TEMP_DIR" 2>/dev/null || true
+  chmod 755 "$TEMP_DIR"
 }
 
 stage_inputs() {
@@ -336,7 +345,7 @@ show_certificate_summary() {
 
 verify_with_zimbra() {
   chown -R zimbra:zimbra "$TEMP_DIR"
-  chmod 700 "$TEMP_DIR"
+  chmod 755 "$TEMP_DIR"
   chmod 600 "${TEMP_DIR}/commercial.key"
 
   info "Đang kiểm tra certificate/key/CA chain bằng zmcertmgr..."

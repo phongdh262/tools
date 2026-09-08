@@ -145,7 +145,7 @@ Các bài kiểm tra này mô phỏng thành phần độc lập và không cài
 
 ## 2. Cài SSL Let's Encrypt tự động cho Zimbra
 
-`zimbra-ssl.sh` dùng Certbot standalone, deploy certificate vào Zimbra và tạo lịch kiểm tra gia hạn lúc `03:17` và `15:17` mỗi ngày.
+`zimbra-ssl.sh` dùng Certbot standalone, deploy certificate vào Zimbra và tạo lịch cron kiểm tra gia hạn tự động lúc `03:17` hàng ngày (khung giờ khuya ít tải). Script có cơ chế kiểm tra hạn chứng chỉ trước: **chỉ khi chứng chỉ còn dưới 30 ngày** (hoặc hết hạn) mới tiến hành xin cấp mới và deploy, nếu chứng chỉ còn hạn trên 30 ngày script sẽ tự động bỏ qua để tuyệt đối không làm gián đoạn hoạt động của Zimbra.
 
 ### Yêu cầu
 
@@ -153,7 +153,7 @@ Các bài kiểm tra này mô phỏng thành phần độc lập và không cài
 - Bản ghi A của FQDN mail đã trỏ đúng IP VPS.
 - Cổng TCP `80` truy cập được từ Internet và không bị cloud firewall chặn.
 - Chạy bằng `root`.
-- Zimbra sẽ tạm dừng trong lúc Certbot xác thực qua cổng 80.
+- Khi thực sự đến hạn gia hạn, Zimbra sẽ tạm dừng ngắn trong lúc Certbot xác thực qua cổng 80 (chạy lúc 03:17 sáng để tránh ảnh hưởng).
 
 ### Chạy
 
@@ -179,12 +179,19 @@ Sau khi thành công, script được cài tại:
 Các lệnh vận hành:
 
 ```bash
+# Kiểm tra hạn SSL và chỉ gia hạn nếu còn < 30 ngày
 sudo /usr/local/sbin/zimbra-ssl --renew
+
+# Ép buộc gia hạn ngay lập tức (bỏ qua bước kiểm tra 30 ngày)
+sudo /usr/local/sbin/zimbra-ssl --renew --force
+
+# Dừng/khởi động Zimbra phục vụ certbot
 sudo /usr/local/sbin/zimbra-ssl --stop
 sudo /usr/local/sbin/zimbra-ssl --start
 ```
 
-Cron tự động nằm tại `/etc/cron.d/zimbra-letsencrypt`.
+- Cron tự động nằm tại: `/etc/cron.d/zimbra-letsencrypt` (chạy `17 3 * * *` lúc 03:17 sáng mỗi ngày).
+- Log quá trình kiểm tra và gia hạn hàng ngày được lưu tại: `/var/log/zimbra-ssl-renew.log`.
 
 ## 3. Deploy certificate thương mại vào Zimbra
 

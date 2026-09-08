@@ -19,6 +19,8 @@ readonly ROOT_CA_FILE="${CONFIG_DIR}/ISRG-Root-X1.pem"
 readonly ROOT_CA_URL="https://letsencrypt.org/certs/isrgrootx1.pem"
 readonly ROOT_CA_SHA256="96BCEC06264976F37460779ACF28C5A7CFE8A3C0AAE11A8FFCEE05C0BDDF08C6"
 readonly CRON_FILE="/etc/cron.d/zimbra-letsencrypt"
+readonly RENEW_THRESHOLD_DAYS=30
+readonly RENEW_LOG_FILE="/var/log/zimbra-ssl-renew.log"
 readonly ZMCERTMGR="/opt/zimbra/bin/zmcertmgr"
 readonly ZMCONTROL="/opt/zimbra/bin/zmcontrol"
 readonly COMMERCIAL_DIR="/opt/zimbra/ssl/zimbra/commercial"
@@ -29,16 +31,32 @@ TEMP_DIR=""
 ZIMBRA_NEEDS_START=0
 CERT_DEPLOYED=0
 
+if [[ -t 1 && "${NO_COLOR:-}" == "" ]]; then
+  readonly BLUE=$'\033[1;34m'
+  readonly YELLOW=$'\033[1;33m'
+  readonly RED=$'\033[1;31m'
+  readonly RESET=$'\033[0m'
+else
+  readonly BLUE=""
+  readonly YELLOW=""
+  readonly RED=""
+  readonly RESET=""
+fi
+
+log_time() {
+  date '+%Y-%m-%d %H:%M:%S'
+}
+
 info() {
-  printf '\n\033[1;34m[zimbra-ssl]\033[0m %s\n' "$*"
+  printf '\n%s[zimbra-ssl]%s [%s] %s\n' "$BLUE" "$RESET" "$(log_time)" "$*"
 }
 
 warn() {
-  printf '\n\033[1;33m[zimbra-ssl]\033[0m %s\n' "$*" >&2
+  printf '\n%s[zimbra-ssl]%s [%s] CẢNH BÁO: %s\n' "$YELLOW" "$RESET" "$(log_time)" "$*" >&2
 }
 
 die() {
-  printf '\n\033[1;31m[zimbra-ssl]\033[0m %s\n' "$*" >&2
+  printf '\n%s[zimbra-ssl]%s [%s] LỖI: %s\n' "$RED" "$RESET" "$(log_time)" "$*" >&2
   exit 1
 }
 
@@ -134,8 +152,17 @@ start_after_certbot() {
 
 make_temp_dir() {
   if [[ -z "$TEMP_DIR" ]]; then
-    TEMP_DIR="$(mktemp -d /var/tmp/zimbra-ssl.XXXXXX)"
-    chmod 700 "$TEMP_DIR"
+    local base_tmp="/opt/zimbra/ssl/zimbra"
+    if [[ ! -d "$base_tmp" ]]; then
+      base_tmp="/opt/zimbra/data/tmp"
+    fi
+    if [[ ! -d "$base_tmp" ]]; then
+      base_tmp="/tmp"
+    fi
+    install -d -o zimbra -g zimbra -m 755 "$base_tmp" 2>/dev/null || true
+    TEMP_DIR="$(mktemp -d "${base_tmp}/ssl-stage.XXXXXX")"
+    chown -R zimbra:zimbra "$TEMP_DIR" 2>/dev/null || true
+    chmod 755 "$TEMP_DIR"
   fi
 }
 
@@ -152,7 +179,7 @@ cleanup() {
   fi
 
   case "$TEMP_DIR" in
-    /var/tmp/zimbra-ssl.*)
+    /opt/zimbra/*/ssl-stage.* | /opt/zimbra/*/*/ssl-stage.* | /var/tmp/zimbra-ssl.* | /tmp/ssl-stage.* | /tmp/zimbra-ssl.*)
       rm -rf -- "$TEMP_DIR"
       ;;
   esac
@@ -250,27 +277,41 @@ deploy_certificate() {
   ensure_root_ca
   make_temp_dir
 
-  install -m 600 "${canonical_lineage}/privkey.pem" "${TEMP_DIR}/commercial.key"
-  install -m 644 "${canonical_lineage}/cert.pem" "${TEMP_DIR}/cert.pem"
-  install -m 644 "${canonical_lineage}/chain.pem" "${TEMP_DIR}/chain.pem"
-  cat "${TEMP_DIR}/chain.pem" "$ROOT_CA_FILE" > "${TEMP_DIR}/full-chain.pem"
-  chmod 644 "${TEMP_DIR}/full-chain.pem"
+  install -d -o zimbra -g zimbra -m 750 "$COMMERCIAL_DIR"
 
-  chown -R zimbra:zimbra "$TEMP_DIR"
-  chmod 700 "$TEMP_DIR"
-  chmod 600 "${TEMP_DIR}/commercial.key"
+  # Sao lưu commercial.key hiện có (nếu có) trước khi ghi đè
+  if [[ -s "$key_target" ]]; then
+    install -o zimbra -g zimbra -m 600 "$key_target" "${TEMP_DIR}/commercial.key.bak"
+  fi
+
+  # Cài đặt commercial.key vào đúng thư mục của Zimbra thuộc quyền zimbra:zimbra
+  install -o zimbra -g zimbra -m 600 "${canonical_lineage}/privkey.pem" "$key_target"
+  install -o zimbra -g zimbra -m 600 "${canonical_lineage}/privkey.pem" "${TEMP_DIR}/commercial.key"
+
+  # Chuẩn bị cert và full-chain trong TEMP_DIR thuộc quyền zimbra:zimbra
+  install -o zimbra -g zimbra -m 644 "${canonical_lineage}/cert.pem" "${TEMP_DIR}/cert.pem"
+  install -o zimbra -g zimbra -m 644 "${canonical_lineage}/chain.pem" "${TEMP_DIR}/chain.pem"
+  {
+    cat "${TEMP_DIR}/chain.pem"
+    printf '\n'
+    cat "$ROOT_CA_FILE"
+  } > "${TEMP_DIR}/full-chain.pem"
+  chown zimbra:zimbra "${TEMP_DIR}/full-chain.pem"
+  chmod 644 "${TEMP_DIR}/full-chain.pem"
 
   deployed_fingerprint="$(certificate_fingerprint "${TEMP_DIR}/cert.pem")"
 
   info "Đang kiểm tra certificate và private key..."
-  run_as_zimbra \
+  if ! run_as_zimbra \
     "$ZMCERTMGR" verifycrt comm \
-    "${TEMP_DIR}/commercial.key" \
+    "$key_target" \
     "${TEMP_DIR}/cert.pem" \
-    "${TEMP_DIR}/full-chain.pem"
-
-  install -d -o zimbra -g zimbra -m 750 "$COMMERCIAL_DIR"
-  install -o zimbra -g zimbra -m 600 "${TEMP_DIR}/commercial.key" "$key_target"
+    "${TEMP_DIR}/full-chain.pem"; then
+    if [[ -s "${TEMP_DIR}/commercial.key.bak" ]]; then
+      install -o zimbra -g zimbra -m 600 "${TEMP_DIR}/commercial.key.bak" "$key_target"
+    fi
+    die "Xác thực certificate với private key hoặc chain thất bại."
+  fi
 
   info "Đang deploy certificate vào Zimbra..."
   run_as_zimbra \
@@ -355,7 +396,7 @@ install_automation() {
   {
     printf '%s\n' 'SHELL=/bin/sh'
     printf '%s\n' 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
-    printf '17 3,15 * * * root %s --renew\n' "$INSTALL_PATH"
+    printf '17 3 * * * root %s --renew >> %s 2>&1\n' "$INSTALL_PATH" "$RENEW_LOG_FILE"
   } > "$cron_tmp"
   install -o root -g root -m 644 "$cron_tmp" "$CRON_FILE"
   rm -f -- "$cron_tmp"
@@ -380,16 +421,67 @@ configured_certbot() {
 }
 
 renew_certificate() {
+  local force=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --force)
+        force=1
+        ;;
+      *)
+        die "Tùy chọn renew không hợp lệ: $1"
+        ;;
+    esac
+    shift
+  done
+
   local domain
   local certbot_path
   local lineage
+  local cert_file
+  local threshold_seconds
   local renew_exit=0
 
   domain="$(configured_domain)"
   certbot_path="$(configured_certbot)"
   lineage="/etc/letsencrypt/live/${domain}"
 
-  info "Đang kiểm tra gia hạn certificate cho ${domain}..."
+  # Nếu cert trong lineage đã được cấp mới từ trước nhưng chưa kịp deploy vào Zimbra
+  CERT_DEPLOYED=0
+  if [[ -s "${lineage}/cert.pem" ]]; then
+    deploy_if_needed "$lineage"
+    if (( CERT_DEPLOYED )); then
+      info "Đã deploy certificate mới từ ${lineage}. Đang restart Zimbra để áp dụng..."
+      zimbra_control restart
+      return 0
+    fi
+  fi
+
+  # Ưu tiên kiểm tra cert thương mại đang kích hoạt trong Zimbra; nếu chưa có thì kiểm tra cert trong Let's Encrypt lineage
+  cert_file="${COMMERCIAL_DIR}/commercial.crt"
+  if [[ ! -s "$cert_file" && -s "${lineage}/cert.pem" ]]; then
+    cert_file="${lineage}/cert.pem"
+  fi
+
+  threshold_seconds=$(( RENEW_THRESHOLD_DAYS * 86400 ))
+
+  if (( force == 0 )) && [[ -s "$cert_file" ]]; then
+    if openssl x509 -checkend "$threshold_seconds" -noout -in "$cert_file" >/dev/null 2>&1; then
+      local expiry_date
+      expiry_date="$(openssl x509 -enddate -noout -in "$cert_file" 2>/dev/null | cut -d= -f2 || true)"
+      info "Certificate cho domain ${domain} vẫn còn hạn đến ${expiry_date} (> ${RENEW_THRESHOLD_DAYS} ngày). Bỏ qua gia hạn."
+      return 0
+    fi
+    info "Certificate cho domain ${domain} còn dưới ${RENEW_THRESHOLD_DAYS} ngày hoặc đã hết hạn. Bắt đầu quá trình gia hạn..."
+  elif (( force == 1 )); then
+    info "Kích hoạt gia hạn ngay lập tức với tùy chọn --force cho domain ${domain}..."
+  fi
+
+  if ! zimbra_is_running; then
+    warn "Zimbra đang không chạy; bỏ qua gia hạn để tránh can thiệp trạng thái dịch vụ."
+    return 1
+  fi
+
+  info "Đang kiểm tra và gia hạn certificate qua Certbot..."
   "$certbot_path" renew \
     --quiet \
     --cert-name "$domain" \
@@ -513,7 +605,7 @@ initial_install() {
   zimbra_control restart
 
   install_automation "$domain"
-  info "Cài SSL thành công. Tự động gia hạn được kiểm tra lúc 03:17 và 15:17 mỗi ngày."
+  info "Cài SSL thành công. Tự động kiểm tra gia hạn lúc 03:17 hàng ngày (chỉ gia hạn khi còn dưới ${RENEW_THRESHOLD_DAYS} ngày)."
 }
 
 usage() {
@@ -521,8 +613,9 @@ usage() {
 Cách dùng:
   sudo ./${SCRIPT_NAME} [mail.example.com] [admin@example.com]
 
-Các chế độ nội bộ dành cho Certbot:
-  ${INSTALL_PATH} --renew
+Các chế độ nội bộ / Quản trị:
+  ${INSTALL_PATH} --renew           # Kiểm tra và chỉ gia hạn nếu cert còn dưới ${RENEW_THRESHOLD_DAYS} ngày
+  ${INSTALL_PATH} --renew --force   # Ép buộc gia hạn ngay lập tức
   ${INSTALL_PATH} --stop
   ${INSTALL_PATH} --start
 EOF
@@ -543,7 +636,8 @@ case "${1:-}" in
     require_root
     require_zimbra
     require_command openssl
-    renew_certificate
+    shift
+    renew_certificate "$@"
     ;;
   -h | --help)
     usage
