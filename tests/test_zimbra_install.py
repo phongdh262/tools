@@ -283,5 +283,62 @@ sshd() { return 0; }
         self.assertIn('ListenStream=0.0.0.0:2210', socket_dropin.read_text())
 
 
+    def test_warn_function(self):
+        res = self.bash('warn "sample warning message"')
+        self.assertIn('WARNING: sample warning message', res.stderr)
+
+    def test_detect_ipv6(self):
+        func = re.search(r'^detect_ipv6\(\) \{.*?^\}', SOURCE, re.M | re.S).group()
+        # Test disabled when proc file missing
+        res = self.bash(func + '\ndetect_ipv6\necho "IPV6=$IPV6_ENABLED"')
+        self.assertIn('IPV6=no', res.stdout)
+
+        # Test disabled when disable_ipv6 is 1
+        proc_mock = self.tmp / 'proc'
+        (proc_mock / 'sys/net/ipv6/conf/all').mkdir(parents=True, exist_ok=True)
+        (proc_mock / 'sys/net/ipv6/conf/all/disable_ipv6').write_text('1\n')
+        (proc_mock / 'net').mkdir(parents=True, exist_ok=True)
+        (proc_mock / 'net/if_inet6').touch()
+        func_mocked = func.replace('/proc', str(proc_mock))
+        res = self.bash(func_mocked + '\ndetect_ipv6\necho "IPV6=$IPV6_ENABLED"')
+        self.assertIn('IPV6=no', res.stdout)
+
+        # Test enabled when disable_ipv6 is 0 and if_inet6 exists
+        (proc_mock / 'sys/net/ipv6/conf/all/disable_ipv6').write_text('0\n')
+        res = self.bash(func_mocked + '\ndetect_ipv6\necho "IPV6=$IPV6_ENABLED"')
+        self.assertIn('IPV6=yes', res.stdout)
+
+    def test_configure_ssh_port_sshd_warning_fallback(self):
+        fs = self.tmp / 'fs_warn'
+        (fs / 'etc/ssh').mkdir(parents=True, exist_ok=True)
+        (fs / 'etc/ssh/sshd_config').write_text('#Port 22\nInclude /etc/ssh/sshd_config.d/*.conf\n')
+        func = re.search(r'^configure_ssh_port\(\) \{.*?^\}', SOURCE, re.M | re.S).group()
+        func = func.replace('/etc/ssh', str(fs / 'etc/ssh'))
+        func = func.replace('/etc/systemd', str(fs / 'etc/systemd'))
+        func = func.replace('/usr/lib/systemd', str(fs / 'usr/lib/systemd'))
+        func = func.replace('/lib/systemd', str(fs / 'usr/lib/systemd'))
+        # Mock sshd so first invocation (sshd -t) fails, second succeeds after fallback
+        script = """
+systemctl() { return 0; }
+call_count=0
+sshd() {
+    call_count=$((call_count + 1))
+    if [[ "$1" == "-t" ]]; then
+        if (( call_count == 1 )); then
+            echo "bad address ::" >&2
+            return 255
+        fi
+    fi
+    return 0
+}
+""" + func + "\nIPV6_ENABLED=yes\nconfigure_ssh_port 2210"
+        res = self.bash(script)
+        self.assertIn('WARNING: sshd -t reported warnings for SSH configuration', res.stderr)
+        conf_dropin = fs / 'etc/ssh/sshd_config.d/50-zimbra-ssh-port.conf'
+        self.assertTrue(conf_dropin.exists())
+        self.assertNotIn('ListenAddress ::', conf_dropin.read_text())
+
+
 if __name__ == '__main__':
     unittest.main()
+

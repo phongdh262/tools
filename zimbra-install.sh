@@ -311,6 +311,10 @@ ensure_zimbra_system_accounts() {
     echo "Virus quarantine : $QUARANTINE_ACCOUNT"
 }
 
+warn() {
+    echo "WARNING: $*" >&2
+}
+
 die() {
     echo "ERROR: $*" >&2
     exit 1
@@ -375,10 +379,13 @@ configure_ssh_port() {
     local target_port="${1:-2210}"
     log "Configure SSH service on port $target_port"
 
-    local has_ipv6="yes"
-    if [[ "${IPV6_ENABLED:-}" == "no" ]] || \
-       [[ -f /proc/sys/net/ipv6/conf/all/disable_ipv6 && "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" == 1 ]]; then
-        has_ipv6="no"
+    local has_ipv6="${IPV6_ENABLED:-yes}"
+    if [[ "$has_ipv6" != "no" ]]; then
+        if [[ ! -e /proc/sys/net/ipv6/conf/all/disable_ipv6 ]] || \
+           [[ ! -f /proc/net/if_inet6 ]] || \
+           [[ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" == 1 ]]; then
+            has_ipv6="no"
+        fi
     fi
 
     # 1. Update / create sshd configuration drop-in file (supported on Ubuntu 22.04 & 24.04)
@@ -410,7 +417,7 @@ EOF
         fi
     fi
 
-    # 2. Ubuntu 24.04 LTS: OpenSSH uses systemd socket activation (ssh.socket) by default
+    # 3. Ubuntu 24.04 LTS: OpenSSH uses systemd socket activation (ssh.socket) by default
     # If ssh.socket is active, enabled, or installed, apply systemd socket drop-in override
     if systemctl is-active --quiet ssh.socket 2>/dev/null || \
        systemctl is-enabled --quiet ssh.socket 2>/dev/null || \
@@ -435,18 +442,46 @@ EOF
         systemctl restart ssh.socket 2>/dev/null || true
     fi
 
-    # 3. Ubuntu 22.04 LTS (and systems running standalone ssh service):
+    # 4. Ubuntu 22.04 LTS (and systems running standalone ssh service):
     # Restart the ssh daemon service
     if systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null; then
         systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
     fi
 
-    # 4. Verify sshd syntax
+    # 5. Verify sshd syntax
     if command -v sshd >/dev/null 2>&1; then
-        sshd -t 2>/dev/null || warn "sshd -t reported warnings for SSH configuration"
+        local sshd_err=""
+        if ! sshd_err=$(sshd -t 2>&1); then
+            warn "sshd -t reported warnings for SSH configuration: $sshd_err"
+            # If sshd -t failed and ListenAddress :: was configured, fall back to IPv4-only
+            if grep -q '^[[:space:]]*ListenAddress[[:space:]]\+::' /etc/ssh/sshd_config.d/50-zimbra-ssh-port.conf 2>/dev/null; then
+                sed -i '/^[[:space:]]*ListenAddress[[:space:]]\+::/d' /etc/ssh/sshd_config.d/50-zimbra-ssh-port.conf
+                if [[ -f /etc/systemd/system/ssh.socket.d/listen.conf ]]; then
+                    sed -i '/ListenStream=\[::\]/d' /etc/systemd/system/ssh.socket.d/listen.conf
+                    systemctl daemon-reload 2>/dev/null || true
+                    systemctl restart ssh.socket 2>/dev/null || true
+                fi
+                systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+                if sshd_err=$(sshd -t 2>&1); then
+                    log "SSH configuration recovered by disabling IPv6 ListenAddress"
+                else
+                    warn "sshd -t still reported issues after IPv6 fallback: $sshd_err"
+                fi
+            fi
+        fi
     fi
 
     echo "SSH service configured on port: $target_port"
+}
+
+detect_ipv6() {
+    if [[ ! -e /proc/sys/net/ipv6/conf/all/disable_ipv6 ]] || \
+       [[ ! -f /proc/net/if_inet6 ]] || \
+       [[ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" == 1 ]]; then
+        IPV6_ENABLED=no
+    else
+        IPV6_ENABLED=yes
+    fi
 }
 
 detect_ubuntu_version() {
@@ -1068,8 +1103,7 @@ configure_csf() {
     log "Configure CSF firewall"
     systemctl is-active --quiet firewalld && die "firewalld is active; migrate it explicitly before using CSF"
     [[ -s "$CSF_TEMPLATE" ]] || die "CSF assets were not prepared"
-    if [[ ! -e /proc/sys/net/ipv6/conf/all/disable_ipv6 ]] || \
-        [[ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)" == 1 ]]; then IPV6_ENABLED=no; fi
+    detect_ipv6
     # Preserve every configured/listening SSH port, including socket activation.
     if [[ -n "$ADMIN_CIDR" ]]; then
         ports="$(printf '%s\n' "$FIREWALL_PUBLIC_TCP_PORTS" | sed 's/\b7071\b//') $(detect_ssh_port)"
@@ -1371,6 +1405,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 detect_ubuntu_version
+detect_ipv6
 DOMAIN="${DOMAIN,,}"
 MAIL_HOST="${MAIL_HOST,,}"
 ADMIN_PASS="${ADMIN_PASS:-${ZIMBRA_ADMIN_PASSWORD:-}}"
