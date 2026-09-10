@@ -35,6 +35,10 @@ class ZimbraSSLTests(unittest.TestCase):
         self.assertNotIn('17 3,15 * * *', SOURCE)
         self.assertIn('/var/log/zimbra-ssl-renew.log', SOURCE)
 
+    def test_force_renewal_passes_flag_to_certbot(self):
+        self.assertIn('--force-renewal', SOURCE)
+        self.assertIn('certbot_renew_args+=(--force-renewal)', SOURCE)
+
     def test_cert_checkend_logic(self):
         key_file = self.tmp / 'test.key'
         cert_60d = self.tmp / 'cert_60d.pem'

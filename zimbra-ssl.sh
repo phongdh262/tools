@@ -447,7 +447,7 @@ renew_certificate() {
 
   # Nếu cert trong lineage đã được cấp mới từ trước nhưng chưa kịp deploy vào Zimbra
   CERT_DEPLOYED=0
-  if [[ -s "${lineage}/cert.pem" ]]; then
+  if (( force == 0 )) && [[ -s "${lineage}/cert.pem" ]]; then
     deploy_if_needed "$lineage"
     if (( CERT_DEPLOYED )); then
       info "Đã deploy certificate mới từ ${lineage}. Đang restart Zimbra để áp dụng..."
@@ -481,13 +481,21 @@ renew_certificate() {
     return 1
   fi
 
+  local -a certbot_renew_args
+  certbot_renew_args=(
+    renew
+    --cert-name "$domain"
+    --pre-hook "${INSTALL_PATH} --stop"
+    --post-hook "${INSTALL_PATH} --start"
+  )
+  if (( force == 1 )); then
+    certbot_renew_args+=(--force-renewal)
+  else
+    certbot_renew_args+=(--quiet)
+  fi
+
   info "Đang kiểm tra và gia hạn certificate qua Certbot..."
-  "$certbot_path" renew \
-    --quiet \
-    --cert-name "$domain" \
-    --pre-hook "${INSTALL_PATH} --stop" \
-    --post-hook "${INSTALL_PATH} --start" \
-    || renew_exit="$?"
+  "$certbot_path" "${certbot_renew_args[@]}" || renew_exit="$?"
 
   # Certbot thường tự chạy post-hook; gọi lại để phục hồi nếu hook bị gián đoạn.
   start_after_certbot
@@ -497,14 +505,23 @@ renew_certificate() {
     return 1
   fi
 
+  if (( renew_exit != 0 )); then
+    warn "Certbot gia hạn thất bại (exit code: ${renew_exit})."
+    return "$renew_exit"
+  fi
+
   CERT_DEPLOYED=0
-  deploy_if_needed "$lineage"
+  if (( force == 1 )); then
+    deploy_certificate "$lineage"
+  else
+    deploy_if_needed "$lineage"
+  fi
   if (( CERT_DEPLOYED )); then
     info "Đang restart Zimbra để nạp certificate mới..."
     zimbra_control restart
   fi
 
-  return "$renew_exit"
+  return 0
 }
 
 prompt_domain() {
@@ -584,6 +601,7 @@ initial_install() {
     --email "$email"
     --cert-name "$domain"
     --rsa-key-size 2048
+    --force-renewal
     -d "$domain"
   )
   certbot_help="$("$certbot_path" certonly --help all 2>&1 || true)"
