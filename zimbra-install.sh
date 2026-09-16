@@ -714,6 +714,68 @@ repair_zimbra_apt_keyring_permissions() {
     fi
 }
 
+wait_for_apt_lock() {
+    local max_wait=300
+    local waited=0
+    local lock_files=(
+        /var/lib/dpkg/lock-frontend
+        /var/lib/dpkg/lock
+        /var/lib/apt/lists/lock
+        /var/cache/apt/archives/lock
+    )
+
+    if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+        systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+    fi
+
+    while true; do
+        local locked=0
+        local holder=""
+
+        for lock in "${lock_files[@]}"; do
+            [[ -e "$lock" ]] || continue
+            if command -v fuser >/dev/null 2>&1; then
+                holder=$(fuser "$lock" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//' || true)
+                if [[ -n "$holder" ]] || fuser "$lock" >/dev/null 2>&1; then
+                    locked=1
+                    break
+                fi
+            elif command -v lsof >/dev/null 2>&1; then
+                holder=$(lsof -t "$lock" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true)
+                if [[ -n "$holder" ]]; then
+                    locked=1
+                    break
+                fi
+            elif [[ -d /proc ]]; then
+                for fd in /proc/[0-9]*/fd/*; do
+                    if [[ -e "$fd" ]] && [[ "$(readlink -f "$fd" 2>/dev/null)" == "$lock" ]]; then
+                        locked=1
+                        holder="${fd#/proc/}"
+                        holder="${holder%%/*}"
+                        break 2
+                    fi
+                done 2>/dev/null
+            fi
+        done
+
+        if (( locked == 0 )); then
+            break
+        fi
+
+        if (( waited == 0 )); then
+            echo "Waiting for background package process (PID: ${holder:-unknown}) to release APT/dpkg lock..."
+        fi
+
+        if (( waited >= max_wait )); then
+            die "Timed out waiting for APT/dpkg lock (PID: ${holder:-unknown}) after ${max_wait} seconds"
+        fi
+
+        sleep 5
+        waited=$(( waited + 5 ))
+    done
+}
+
+
 fetch_reference_epoch() {
     local date_header
     local endpoint
@@ -1470,6 +1532,7 @@ echo "ZCS Version     : ${ZCS_VERSION} GA (${ZCS_BUILD})"
 if [[ "$ONLY_FIREWALL" == yes ]]; then
     repair_bootstrap_dns
     export DEBIAN_FRONTEND=noninteractive
+    wait_for_apt_lock
     apt-get update
     apt-get install -y ca-certificates curl perl iptables ipset iproute2 \
         libwww-perl libio-socket-ssl-perl libnet-libidn-perl libsocket6-perl rsyslog
@@ -1544,6 +1607,9 @@ synchronize_system_clock
 log "Install OS dependencies"
 
 export DEBIAN_FRONTEND=noninteractive
+
+# Wait for background unattended-upgrades or apt-daily to release package lock.
+wait_for_apt_lock
 
 # Older script versions could restrict both the key and its parent directory.
 # Verify readability as the same unprivileged user APT uses for downloads.
@@ -1865,6 +1931,8 @@ chmod 600 "$SOFTWARE_CONFIG_FILE"
 log "Install Zimbra software"
 
 cd "$ZCS_DIR"
+
+wait_for_apt_lock
 
 if ! ./install.sh -s "$SOFTWARE_CONFIG_FILE"; then
     echo

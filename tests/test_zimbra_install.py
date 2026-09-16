@@ -338,7 +338,35 @@ sshd() {
         self.assertTrue(conf_dropin.exists())
         self.assertNotIn('ListenAddress ::', conf_dropin.read_text())
 
+    def test_wait_for_apt_lock_releases(self):
+        fs = self.tmp / 'apt_fs'
+        (fs / 'var/lib/dpkg').mkdir(parents=True, exist_ok=True)
+        (fs / 'var/lib/dpkg/lock-frontend').touch()
+        func = re.search(r'^wait_for_apt_lock\(\) \{.*?^\}', SOURCE, re.M | re.S).group()
+        func = func.replace('/var/lib/dpkg', str(fs / 'var/lib/dpkg'))
+        counter = self.tmp / 'call_count'
+        counter.write_text('0')
+        # Mock fuser to simulate locked first, then released on second check
+        script = f"""
+fuser() {{
+    local c
+    c=$(cat "{counter}")
+    c=$(( c + 1 ))
+    printf '%s' "$c" > "{counter}"
+    if (( c == 1 )); then
+        echo "1580"
+        return 0
+    fi
+    return 1
+}}
+sleep() {{ :; }}
+systemctl() {{ return 0; }}
+""" + func + "\nwait_for_apt_lock"
+        res = self.bash(script)
+        self.assertIn('Waiting for background package process (PID: 1580) to release APT/dpkg lock', res.stdout)
+
 
 if __name__ == '__main__':
     unittest.main()
+
 
