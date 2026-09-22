@@ -23,6 +23,7 @@ readonly RENEW_THRESHOLD_DAYS=30
 readonly RENEW_LOG_FILE="/var/log/zimbra-ssl-renew.log"
 readonly ZMCERTMGR="/opt/zimbra/bin/zmcertmgr"
 readonly ZMCONTROL="/opt/zimbra/bin/zmcontrol"
+readonly ZMLOCALCONFIG="/opt/zimbra/bin/zmlocalconfig"
 readonly COMMERCIAL_DIR="/opt/zimbra/ssl/zimbra/commercial"
 readonly RUNTIME_DIR="/run/zimbra-ssl"
 readonly WAS_RUNNING_FILE="${RUNTIME_DIR}/was-running"
@@ -30,6 +31,7 @@ readonly WAS_RUNNING_FILE="${RUNTIME_DIR}/was-running"
 TEMP_DIR=""
 ZIMBRA_NEEDS_START=0
 CERT_DEPLOYED=0
+LDAP_TLS_MODIFIED=0
 
 if [[ -t 1 && "${NO_COLOR:-}" == "" ]]; then
   readonly BLUE=$'\033[1;34m'
@@ -108,6 +110,7 @@ require_zimbra() {
   id zimbra >/dev/null 2>&1 || die "Không tìm thấy user zimbra."
   [[ -x "$ZMCERTMGR" ]] || die "Không tìm thấy: ${ZMCERTMGR}"
   [[ -x "$ZMCONTROL" ]] || die "Không tìm thấy: ${ZMCONTROL}"
+  [[ -x "$ZMLOCALCONFIG" ]] || die "Không tìm thấy: ${ZMLOCALCONFIG}"
   require_command su
 }
 
@@ -119,6 +122,42 @@ run_as_zimbra() {
 
 zimbra_control() {
   run_as_zimbra "$ZMCONTROL" "$1"
+}
+
+is_ldap_tls_error() {
+  local output="$1"
+  grep -qiE 'Unable to start TLS|certificate verify failed.*ldap|error:0A000086' <<< "$output"
+}
+
+is_ldap_tls_disabled() {
+  local cfg
+  cfg="$(run_as_zimbra "$ZMLOCALCONFIG" -s ldap_starttls_required ldap_starttls_supported 2>/dev/null || true)"
+  if grep -qiE 'ldap_starttls_required[[:space:]]*=[[:space:]]*false' <<< "$cfg" \
+     || grep -qiE 'ldap_starttls_supported[[:space:]]*=[[:space:]]*0' <<< "$cfg"; then
+    return 0
+  fi
+  return 1
+}
+
+disable_ldap_tls() {
+  info "Đang tạm thời tắt TLS LDAP để khắc phục lỗi xác thực chứng chỉ..."
+  run_as_zimbra "$ZMLOCALCONFIG" -e ldap_starttls_required=false
+  run_as_zimbra "$ZMLOCALCONFIG" -e ldap_starttls_supported=0
+  run_as_zimbra "$ZMLOCALCONFIG" -e ldap_common_require_tls=0
+  LDAP_TLS_MODIFIED=1
+  info "Đang khởi động dịch vụ Zimbra với TLS LDAP tạm tắt..."
+  zimbra_control start || true
+}
+
+enable_ldap_tls() {
+  info "Đang bật lại TLS LDAP và cấu hình bảo mật..."
+  run_as_zimbra "$ZMLOCALCONFIG" -e ssl_allow_untrusted_certs=false
+  run_as_zimbra "$ZMLOCALCONFIG" -e ldap_starttls_supported=1
+  run_as_zimbra "$ZMLOCALCONFIG" -e ldap_starttls_required=true
+  run_as_zimbra "$ZMLOCALCONFIG" -e ldap_common_require_tls=0
+  info "Đang restart Zimbra để áp dụng cấu hình TLS LDAP và certificate mới..."
+  zimbra_control restart
+  LDAP_TLS_MODIFIED=0
 }
 
 zimbra_is_running() {
@@ -172,10 +211,23 @@ cleanup() {
 
   if (( ZIMBRA_NEEDS_START )); then
     warn "Đang khởi động lại Zimbra sau lỗi..."
-    if ! zimbra_control start; then
-      warn "Không thể tự khởi động Zimbra. Hãy chạy: su - zimbra -c 'zmcontrol start'"
-      exit_code=1
+    local cleanup_start_out=""
+    if ! cleanup_start_out="$(zimbra_control start 2>&1)"; then
+      if is_ldap_tls_error "$cleanup_start_out"; then
+        warn "Phát hiện lỗi TLS LDAP khi khởi động lại Zimbra trong cleanup."
+        disable_ldap_tls
+      else
+        warn "Không thể tự khởi động Zimbra: ${cleanup_start_out}"
+        warn "Hãy chạy: su - zimbra -c 'zmcontrol start'"
+        exit_code=1
+      fi
     fi
+  fi
+
+  if (( LDAP_TLS_MODIFIED && ! CERT_DEPLOYED )); then
+    warn "TLS LDAP đã được tạm thời tắt để xử lý lỗi chứng chỉ nhưng deploy chưa hoàn tất."
+    warn "Sau khi khắc phục sự cố và deploy thành công, hãy bật lại bằng cách chạy:"
+    warn "  su - zimbra -c 'zmlocalconfig -e ssl_allow_untrusted_certs=false && zmlocalconfig -e ldap_starttls_supported=1 && zmlocalconfig -e ldap_starttls_required=true && zmlocalconfig -e ldap_common_require_tls=0 && zmcontrol restart'"
   fi
 
   case "$TEMP_DIR" in
@@ -302,22 +354,58 @@ deploy_certificate() {
   deployed_fingerprint="$(certificate_fingerprint "${TEMP_DIR}/cert.pem")"
 
   info "Đang kiểm tra certificate và private key..."
-  if ! run_as_zimbra \
+  local verify_out=""
+  if ! verify_out="$(run_as_zimbra \
     "$ZMCERTMGR" verifycrt comm \
     "$key_target" \
     "${TEMP_DIR}/cert.pem" \
-    "${TEMP_DIR}/full-chain.pem"; then
-    if [[ -s "${TEMP_DIR}/commercial.key.bak" ]]; then
-      install -o zimbra -g zimbra -m 600 "${TEMP_DIR}/commercial.key.bak" "$key_target"
+    "${TEMP_DIR}/full-chain.pem" 2>&1)"; then
+    if is_ldap_tls_error "$verify_out"; then
+      warn "Phát hiện lỗi TLS LDAP khi kiểm tra certificate: ${verify_out}"
+      disable_ldap_tls
+      info "Đang kiểm tra lại certificate và private key..."
+      if ! run_as_zimbra \
+        "$ZMCERTMGR" verifycrt comm \
+        "$key_target" \
+        "${TEMP_DIR}/cert.pem" \
+        "${TEMP_DIR}/full-chain.pem"; then
+        if [[ -s "${TEMP_DIR}/commercial.key.bak" ]]; then
+          install -o zimbra -g zimbra -m 600 "${TEMP_DIR}/commercial.key.bak" "$key_target"
+        fi
+        die "Xác thực certificate với private key hoặc chain thất bại."
+      fi
+    else
+      if [[ -s "${TEMP_DIR}/commercial.key.bak" ]]; then
+        install -o zimbra -g zimbra -m 600 "${TEMP_DIR}/commercial.key.bak" "$key_target"
+      fi
+      printf '%s\n' "$verify_out" >&2
+      die "Xác thực certificate với private key hoặc chain thất bại."
     fi
-    die "Xác thực certificate với private key hoặc chain thất bại."
+  else
+    printf '%s\n' "$verify_out"
   fi
 
   info "Đang deploy certificate vào Zimbra..."
-  run_as_zimbra \
+  local deploy_out=""
+  if ! deploy_out="$(run_as_zimbra \
     "$ZMCERTMGR" deploycrt comm \
     "${TEMP_DIR}/cert.pem" \
-    "${TEMP_DIR}/full-chain.pem"
+    "${TEMP_DIR}/full-chain.pem" 2>&1)"; then
+    if is_ldap_tls_error "$deploy_out"; then
+      warn "Phát hiện lỗi TLS LDAP khi deploy certificate: ${deploy_out}"
+      disable_ldap_tls
+      info "Đang thử lại deploy certificate sau khi đã tạm tắt TLS LDAP..."
+      run_as_zimbra \
+        "$ZMCERTMGR" deploycrt comm \
+        "${TEMP_DIR}/cert.pem" \
+        "${TEMP_DIR}/full-chain.pem"
+    else
+      printf '%s\n' "$deploy_out" >&2
+      die "Deploy certificate vào Zimbra thất bại."
+    fi
+  else
+    printf '%s\n' "$deploy_out"
+  fi
 
   install -d -o root -g root -m 700 "$CONFIG_DIR"
   fingerprint_tmp="$(mktemp "${DEPLOYED_FINGERPRINT_FILE}.XXXXXX")"
@@ -450,8 +538,12 @@ renew_certificate() {
   if (( force == 0 )) && [[ -s "${lineage}/cert.pem" ]]; then
     deploy_if_needed "$lineage"
     if (( CERT_DEPLOYED )); then
-      info "Đã deploy certificate mới từ ${lineage}. Đang restart Zimbra để áp dụng..."
-      zimbra_control restart
+      if (( LDAP_TLS_MODIFIED )) || is_ldap_tls_disabled; then
+        enable_ldap_tls
+      else
+        info "Đã deploy certificate mới từ ${lineage}. Đang restart Zimbra để áp dụng..."
+        zimbra_control restart
+      fi
       return 0
     fi
   fi
@@ -517,8 +609,12 @@ renew_certificate() {
     deploy_if_needed "$lineage"
   fi
   if (( CERT_DEPLOYED )); then
-    info "Đang restart Zimbra để nạp certificate mới..."
-    zimbra_control restart
+    if (( LDAP_TLS_MODIFIED )) || is_ldap_tls_disabled; then
+      enable_ldap_tls
+    else
+      info "Đang restart Zimbra để nạp certificate mới..."
+      zimbra_control restart
+    fi
   fi
 
   return 0
@@ -586,7 +682,19 @@ initial_install() {
   ensure_root_ca
   lineage="/etc/letsencrypt/live/${domain}"
 
-  zimbra_is_running || die "Zimbra đang dừng. Hãy khởi động Zimbra trước khi cài SSL lần đầu."
+  if ! zimbra_is_running; then
+    warn "Zimbra đang dừng. Đang kiểm tra và thử khởi động Zimbra..."
+    local initial_start_out=""
+    if ! initial_start_out="$(zimbra_control start 2>&1)"; then
+      if is_ldap_tls_error "$initial_start_out"; then
+        warn "Phát hiện lỗi TLS LDAP khi khởi động Zimbra: ${initial_start_out}"
+        disable_ldap_tls
+      fi
+    fi
+    if ! zimbra_is_running; then
+      die "Zimbra đang dừng và không thể khởi động. Hãy kiểm tra: su - zimbra -c 'zmcontrol status'"
+    fi
+  fi
 
   info "Đang dừng Zimbra để Certbot sử dụng cổng 80..."
   ZIMBRA_NEEDS_START=1
@@ -614,13 +722,26 @@ initial_install() {
   "$certbot_path" "${certbot_args[@]}"
 
   info "Đang khởi động Zimbra để LDAP sẵn sàng cho bước deploy..."
-  zimbra_control start
+  local pre_deploy_start_out=""
+  if ! pre_deploy_start_out="$(zimbra_control start 2>&1)"; then
+    if is_ldap_tls_error "$pre_deploy_start_out"; then
+      warn "Phát hiện lỗi TLS LDAP khi khởi động Zimbra: ${pre_deploy_start_out}"
+      disable_ldap_tls
+    else
+      printf '%s\n' "$pre_deploy_start_out" >&2
+      die "Không thể khởi động Zimbra trước khi deploy certificate."
+    fi
+  fi
   ZIMBRA_NEEDS_START=0
 
   deploy_certificate "$lineage"
 
-  info "Đang restart Zimbra để nạp certificate mới..."
-  zimbra_control restart
+  if (( LDAP_TLS_MODIFIED )) || is_ldap_tls_disabled; then
+    enable_ldap_tls
+  else
+    info "Đang restart Zimbra để nạp certificate mới..."
+    zimbra_control restart
+  fi
 
   install_automation "$domain"
   info "Cài SSL thành công. Tự động kiểm tra gia hạn lúc 03:17 hàng ngày (chỉ gia hạn khi còn dưới ${RENEW_THRESHOLD_DAYS} ngày)."
@@ -632,8 +753,10 @@ Cách dùng:
   sudo ./${SCRIPT_NAME} [mail.example.com] [admin@example.com]
 
 Các chế độ nội bộ / Quản trị:
-  ${INSTALL_PATH} --renew           # Kiểm tra và chỉ gia hạn nếu cert còn dưới ${RENEW_THRESHOLD_DAYS} ngày
-  ${INSTALL_PATH} --renew --force   # Ép buộc gia hạn ngay lập tức
+  ${INSTALL_PATH} --renew             # Kiểm tra và chỉ gia hạn nếu cert còn dưới ${RENEW_THRESHOLD_DAYS} ngày
+  ${INSTALL_PATH} --renew --force     # Ép buộc gia hạn ngay lập tức
+  ${INSTALL_PATH} --disable-ldap-tls  # Tạm thời tắt TLS LDAP (khắc phục lỗi certificate verify failed)
+  ${INSTALL_PATH} --enable-ldap-tls   # Bật lại TLS LDAP và restart Zimbra
   ${INSTALL_PATH} --stop
   ${INSTALL_PATH} --start
 EOF
@@ -649,6 +772,16 @@ case "${1:-}" in
     require_root
     require_zimbra
     start_after_certbot
+    ;;
+  --disable-ldap-tls)
+    require_root
+    require_zimbra
+    disable_ldap_tls
+    ;;
+  --enable-ldap-tls)
+    require_root
+    require_zimbra
+    enable_ldap_tls
     ;;
   --renew)
     require_root
