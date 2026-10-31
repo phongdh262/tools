@@ -7,7 +7,6 @@ Kho script: [phongdh262/tools](https://github.com/phongdh262/tools), nhánh `mai
 | Script | Chức năng | Chạy bằng |
 |---|---|---|
 | `zimbra-install.sh` | Cài tự động Zimbra 10 FOSS trên Ubuntu 22.04 / 24.04 (Auto OS + CSF Firewall) | `root` |
-| `install-zimbra.sh` | Cài tự động Zimbra 10.1.20 FOSS trên Ubuntu 22.04 | `root` |
 | `zimbra-ssl.sh` | Cấp và tự động gia hạn SSL Let's Encrypt cho Zimbra | `root` |
 | `zimbra-ssl-deploy.sh` | Kiểm tra/deploy certificate thương mại có sẵn vào Zimbra | `root` |
 | `zimbra-import-users.sh` | Import tài khoản Zimbra từ CSV | `root` hoặc `zimbra` |
@@ -359,7 +358,7 @@ Nếu không có `--keep-script`, script tự xóa chính nó sau khi cập nh�
 Xem hướng dẫn tích hợp trong các script hỗ trợ tham số:
 
 ```bash
-./install-zimbra.sh --help
+./zimbra-install.sh --help
 ./wordpress-core-update.sh --help
 ./zimbra-import-users.sh --help
 ./zimbra-ssl-deploy.sh --help

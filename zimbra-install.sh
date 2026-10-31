@@ -135,36 +135,60 @@ print_install_summary() {
     printf '%s\n' '                    ZIMBRA INSTALLATION COMPLETED'
     summary_rule '='
 
-    summary_section "SYSTEM & OS"
-    summary_field "OS" "Ubuntu ${VERSION_ID} (${UBUNTU_CODENAME})"
-    summary_field "ZCS Version" "${ZCS_VERSION} GA (${ZCS_BUILD})"
-
-    summary_section "ADMIN LOGIN"
-    summary_field "URL" "https://$FQDN:7071"
-    summary_field "Username" "$ADMIN_EMAIL"
-    if [[ "${1:-}" == "--include-password" ]]; then
-        summary_field "Password" "$ADMIN_PASS"
+    summary_section "SYSTEM & DOMAIN"
+    summary_field "OS" "Ubuntu ${VERSION_ID:-} (${UBUNTU_CODENAME:-})"
+    summary_field "ZCS Version" "${ZCS_VERSION:-} GA (${ZCS_BUILD:-})"
+    if [[ -n "${DOMAIN:-}" ]]; then
+        summary_field "Domain / FQDN" "${DOMAIN} (${FQDN:-})"
     else
-        summary_field "Credentials file" "$RESULT_FILE (root only)"
+        summary_field "Host / FQDN" "${FQDN:-}"
+    fi
+    if [[ -n "${SERVER_IP:-}" ]]; then
+        summary_field "Server IPv4" "${SERVER_IP}"
     fi
 
-    summary_section "DKIM DNS RECORD"
-    summary_field "Host / Name" "$DKIM_DNS_NAME"
-    summary_field "Type" "TXT"
-    summary_field "Value" "$DKIM_TXT_VALUE"
+    summary_section "ACCESS & CREDENTIALS"
+    summary_field "Admin Console" "https://${FQDN:-}:7071"
+    summary_field "Webmail Client" "https://${FQDN:-}"
+    summary_field "Admin Account" "${ADMIN_EMAIL:-}"
+    if [[ "${1:-}" == "--include-password" ]]; then
+        summary_field "Admin Password" "${ADMIN_PASS:-}"
+    else
+        summary_field "Credentials file" "${RESULT_FILE:-/root/ZIMBRA-INSTALL-INFO.txt} (root only)"
+    fi
 
-    summary_section "CSF FIREWALL CONFIGURATION"
-    summary_field "Status" "$FIREWALL_STATUS"
-    summary_field "SSH" "$SSH_PORT"
-    printf '%s\n' "$FIREWALL_RULES" | sed 's/^/  /'
+    summary_section "REQUIRED DNS RECORDS"
+    local mail_ip="${SERVER_IP:-<your-server-ip>}"
+    local domain_name="${DOMAIN:-example.com}"
+    summary_field "A Record" "${FQDN:-mail.example.com} -> ${mail_ip}"
+    summary_field "MX Record" "@ (${domain_name}) -> ${FQDN:-mail.example.com} (Priority: 10)"
+    if [[ -n "${SERVER_IP:-}" ]]; then
+        summary_field "SPF (TXT)" "v=spf1 mx ip4:${SERVER_IP} ~all"
+    else
+        summary_field "SPF (TXT)" "v=spf1 mx ~all"
+    fi
+    summary_field "DKIM Host (TXT)" "${DKIM_DNS_NAME:-}"
+    summary_field "DKIM Value" "${DKIM_TXT_VALUE:-}"
 
-    summary_section "ZIMBRA SERVICE STATUS"
-    printf '%s\n' "$STATUS" | sed 's/^/  /'
+    summary_section "FIREWALL & SECURITY"
+    summary_field "CSF / LFD" "${FIREWALL_STATUS:-not configured}"
+    summary_field "SSH Port" "${SSH_PORT:-unchanged}"
+    summary_field "Admin Access (7071)" "${FIREWALL_ADMIN_ACCESS:-not configured}"
+    summary_field "Mail Ports" "25, 80, 443, 465, 587, 993, 995"
+
+    summary_section "ZIMBRA SERVICES"
+    if grep -qiE 'Stopped|not running' <<< "${STATUS:-}"; then
+        summary_field "Status" "WARNING: Some services are not running!"
+        printf '%s\n' "${STATUS}" | grep -iE 'Stopped|not running' | sed 's/^/    /'
+    else
+        summary_field "Status" "All Zimbra services are running"
+    fi
+    summary_field "Check command" 'su - zimbra -c "zmcontrol status"'
 
     echo
     summary_rule '='
-    summary_field "Admin access" "$FIREWALL_ADMIN_ACCESS"
-    printf '%s\n' 'Store the credentials file securely; do not include it in support logs.'
+    summary_field "Credentials file" "${RESULT_FILE:-/root/ZIMBRA-INSTALL-INFO.txt} (chmod 600)"
+    printf '%s\n' 'Store credentials securely; do not share this file in support logs.'
     summary_rule '='
 }
 
