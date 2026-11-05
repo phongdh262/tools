@@ -658,6 +658,94 @@ patch_zimbra_installer() {
     echo "Patched bundled installer: initialized empty P7ZIPREQUIRED as no."
 }
 
+resolve_github_api_asset_url() {
+    local source_url="$1"
+    local repo tag asset_name metadata
+
+    if [[ ! "$source_url" =~ ^https://github\.com/([^/]+/[^/]+)/releases/download/([^/]+)/([^/]+)$ ]]; then
+        return 1
+    fi
+    repo="${BASH_REMATCH[1]}"
+    tag="${BASH_REMATCH[2]}"
+    asset_name="${BASH_REMATCH[3]}"
+
+    metadata=$(curl \
+        --fail \
+        --location \
+        --silent \
+        --proto '=https' \
+        --connect-timeout 15 \
+        --max-time 30 \
+        -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/repos/${repo}/releases/tags/${tag}" 2>/dev/null) || return 1
+
+    printf '%s' "$metadata" | perl -MJSON::PP -e '
+        my $data = eval { decode_json(do { local $/; <STDIN> }) } or exit 1;
+        for my $asset (@{$data->{assets} || []}) {
+            if (($asset->{name} // q{}) eq $ARGV[0] && ($asset->{url} // q{}) =~ m{^https://api\.github\.com/}) {
+                print $asset->{url};
+                exit 0;
+            }
+        }
+        exit 1;
+    ' "$asset_name"
+}
+
+download_installer_archive() {
+    local url="$1"
+    local dest="$2"
+    local api_url=""
+    local round
+
+    for round in 1 2 3 4; do
+        rm -f -- "$dest"
+        if curl \
+            --fail \
+            --location \
+            --proto '=https' \
+            --retry 3 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            --connect-timeout 30 \
+            --speed-limit 10240 \
+            --speed-time 60 \
+            --output "$dest" \
+            "$url"; then
+            return 0
+        fi
+
+        if [[ -z "$api_url" ]]; then
+            api_url=$(resolve_github_api_asset_url "$url" || true)
+        fi
+        if [[ -n "$api_url" ]]; then
+            warn "Primary GitHub Release URL returned an error; retrying via GitHub Releases API..."
+            rm -f -- "$dest"
+            if curl \
+                --fail \
+                --location \
+                --proto '=https' \
+                --retry 3 \
+                --retry-delay 5 \
+                --retry-all-errors \
+                --connect-timeout 30 \
+                --speed-limit 10240 \
+                --speed-time 60 \
+                -H "Accept: application/octet-stream" \
+                --output "$dest" \
+                "$api_url"; then
+                return 0
+            fi
+        fi
+
+        if (( round < 4 )); then
+            warn "Download attempt ${round}/4 failed (CDN edge may still be staging archive); waiting 10s before retry..."
+            sleep 10
+        fi
+    done
+
+    return 1
+}
+
 prepare_installer() {
     local download_tmp
 
@@ -678,15 +766,7 @@ prepare_installer() {
 
         log "Download Zimbra ${ZCS_VERSION}"
         download_tmp=$(mktemp "${DOWNLOAD_DIR}/.${ZCS_ARCHIVE}.part.XXXXXX")
-        if ! curl \
-            --fail \
-            --location \
-            --proto '=https' \
-            --retry 5 \
-            --retry-all-errors \
-            --connect-timeout 20 \
-            --output "$download_tmp" \
-            "$ZCS_SOURCE"; then
+        if ! download_installer_archive "$ZCS_SOURCE" "$download_tmp"; then
             rm -f -- "$download_tmp"
             die "Cannot download Zimbra archive: $ZCS_SOURCE"
         fi

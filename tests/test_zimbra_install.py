@@ -366,6 +366,42 @@ systemctl() {{ return 0; }}
         res = self.bash(script)
         self.assertIn('Waiting for background package process (PID: 1580) to release APT/dpkg lock', res.stdout)
 
+    def test_download_installer_archive_github_api_fallback(self):
+        dest = self.tmp / 'downloaded.tgz'
+        script = f"""
+sleep() {{ :; }}
+curl() {{
+    local out="" url=""
+    while [[ $# -gt 0 ]]; do
+        if [[ "$1" == "--output" ]]; then
+            out="$2"
+            shift 2
+            continue
+        fi
+        url="$1"
+        shift
+    done
+    case "$url" in
+        https://github.com/phongdh262/tools/releases/download/*)
+            return 22
+            ;;
+        https://api.github.com/repos/phongdh262/tools/releases/tags/zimbra-10.1.21-u24)
+            printf '%s' '{{"assets":[{{"name":"test.tgz","url":"https://api.github.com/repos/phongdh262/tools/releases/assets/999"}}]}}'
+            return 0
+            ;;
+        https://api.github.com/repos/phongdh262/tools/releases/assets/999)
+            printf 'archive-bytes' > "$out"
+            return 0
+            ;;
+    esac
+    return 1
+}}
+download_installer_archive "https://github.com/phongdh262/tools/releases/download/zimbra-10.1.21-u24/test.tgz" "{dest}"
+"""
+        res = self.bash(script)
+        self.assertEqual(dest.read_text(), 'archive-bytes')
+        self.assertIn('retrying via GitHub Releases API', res.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()
