@@ -11,8 +11,8 @@ readonly SCRIPT_DIR
 # ============================================================
 # Zimbra 10 FOSS Automated Installer
 # Supported OS: Ubuntu 22.04 LTS (Jammy) / Ubuntu 24.04 LTS (Noble)
-# Ubuntu 22.04: Zimbra 10.1.20 (GA 0326.UBUNTU22_64.20260821115118)
-# Ubuntu 24.04: Zimbra 10.1.20 (GA 0326.UBUNTU24_64.20260821120929)
+# Ubuntu 22.04: Zimbra 10.1.21 (GA 0426.UBUNTU22_64.20261002083733)
+# Ubuntu 24.04: Zimbra 10.1.21 (GA 0426.UBUNTU24_64.20261002085539)
 # Firewall    : ConfigServer Security & Firewall (CSF + LFD)
 #
 # Usage:
@@ -74,8 +74,8 @@ Usage:
   sudo bash $0 --domain example.com [options]
 
 Supported Operating Systems:
-  Ubuntu 22.04 LTS (Jammy)  -> Zimbra 10.1.20 GA
-  Ubuntu 24.04 LTS (Noble)  -> Zimbra 10.1.20 GA
+  Ubuntu 22.04 LTS (Jammy)  -> Zimbra 10.1.21 GA
+  Ubuntu 24.04 LTS (Noble)  -> Zimbra 10.1.21 GA
 
 Required:
   --domain DOMAIN           Mail domain (for example: example.com)
@@ -518,19 +518,19 @@ detect_ubuntu_version() {
     case "${VERSION_ID:-}" in
         "22.04")
             UBUNTU_CODENAME="jammy"
-            ZCS_VERSION="10.1.20"
-            ZCS_BUILD="0326.UBUNTU22_64.20260821115118"
+            ZCS_VERSION="10.1.21"
+            ZCS_BUILD="0426.UBUNTU22_64.20261002083733"
             ZCS_ARCHIVE="zcs-${ZCS_VERSION}_GA_${ZCS_BUILD}.tgz"
             DEFAULT_ZCS_URL="https://github.com/phongdh262/tools/releases/download/zimbra-${ZCS_VERSION}/${ZCS_ARCHIVE}"
-            DEFAULT_ZCS_SHA256="57c16b71a59fc34d2e1675d122ad9c702d464000b5222b434296a93b850aed75"
+            DEFAULT_ZCS_SHA256="886be9e4be1e4c8ba7d95968332ba2d0ae5b80338719b42f7c1041b361d82b46"
             ;;
         "24.04")
             UBUNTU_CODENAME="noble"
-            ZCS_VERSION="10.1.20"
-            ZCS_BUILD="0326.UBUNTU24_64.20260821120929"
+            ZCS_VERSION="10.1.21"
+            ZCS_BUILD="0426.UBUNTU24_64.20261002085539"
             ZCS_ARCHIVE="zcs-${ZCS_VERSION}_GA_${ZCS_BUILD}.tgz"
             DEFAULT_ZCS_URL="https://github.com/phongdh262/tools/releases/download/zimbra-${ZCS_VERSION}-u24/${ZCS_ARCHIVE}"
-            DEFAULT_ZCS_SHA256="07bbd4662e3f5211986c71b68cf2fe28b2185bd3c796ad8a69c8c10a6ef2fa69"
+            DEFAULT_ZCS_SHA256="138d07bf96c5ae7f33e1945a703e1e4e3f9915e9f2fc0eb71ce2b84a4ec1e3d0"
             ;;
         *)
             die "Unsupported Ubuntu version: ${VERSION_ID:-unknown}. Supported: 22.04, 24.04"

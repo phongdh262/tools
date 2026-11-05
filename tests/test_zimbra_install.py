@@ -36,6 +36,7 @@ class InstallerTests(unittest.TestCase):
         self.assertIn('--csf-conf', result.stdout)
         self.assertIn('--ssh-port', result.stdout)
         self.assertNotIn('10.1.19', result.stdout)
+        self.assertNotIn('10.1.20', result.stdout)
 
     def test_os_mapping(self):
         function = re.search(r'^detect_ubuntu_version\(\) \{.*?^\}', SOURCE, re.M | re.S).group()
@@ -44,7 +45,7 @@ class InstallerTests(unittest.TestCase):
         for version, codename in [('22.04', 'jammy'), ('24.04', 'noble')]:
             fixture.write_text(f'ID=ubuntu\nVERSION_ID="{version}"\n')
             result = self.bash(function + '\ndetect_ubuntu_version\nprintf "%s %s" "$UBUNTU_CODENAME" "$ZCS_VERSION"')
-            self.assertEqual(result.stdout, f'{codename} 10.1.20')
+            self.assertEqual(result.stdout, f'{codename} 10.1.21')
         fixture.write_text('ID=ubuntu\nVERSION_ID="20.04"\n')
         self.assertNotEqual(self.bash(function + '\ndetect_ubuntu_version', ok=False).returncode, 0)
 
@@ -142,7 +143,7 @@ if fetch_verified https://invalid.test bad "$1"; then exit 99; fi
         self.assertLess(SOURCE.index('dnsmasq --test'), SOURCE.index('cat > /etc/resolv.conf <<EOF'))
 
     def test_password_not_in_normal_summary(self):
-        result = self.bash('''VERSION_ID=24.04; UBUNTU_CODENAME=noble; ZCS_VERSION=10.1.20; ZCS_BUILD=test
+        result = self.bash('''VERSION_ID=24.04; UBUNTU_CODENAME=noble; ZCS_VERSION=10.1.21; ZCS_BUILD=test
 FQDN=mail.example.com; ADMIN_EMAIL=admin@example.com; ADMIN_PASS=unique-secret-test
 DKIM_DNS_NAME=selector.example.com; DKIM_TXT_VALUE=public; STATUS=Running
 print_install_summary''')

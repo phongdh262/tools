@@ -27,12 +27,12 @@ Không dùng `source` hoặc `. script.sh`; hãy chạy script trực tiếp b�
 
 ## 1. Cài Zimbra tự động trên Ubuntu 22.04 / 24.04
 
-Dùng `zimbra-install.sh` cho cài mới. Script tự nhận diện Ubuntu, chọn đúng archive Zimbra **10.1.20** và xác minh SHA-256 trước khi giải nén.
+Dùng `zimbra-install.sh` cho cài mới. Script tự nhận diện Ubuntu, chọn đúng archive Zimbra **10.1.21** và xác minh SHA-256 trước khi giải nén.
 
 | Ubuntu | Build | Release |
 |---|---|---|
-| 22.04 x86_64 | `0326.UBUNTU22_64.20260821115118` | `zimbra-10.1.20` |
-| 24.04 x86_64 | `0326.UBUNTU24_64.20260821120929` | `zimbra-10.1.20-u24` |
+| 22.04 x86_64 | `0426.UBUNTU22_64.20261002083733` | `zimbra-10.1.21` |
+| 24.04 x86_64 | `0426.UBUNTU24_64.20261002085539` | `zimbra-10.1.21-u24` |
 
 ### Yêu cầu
 
@@ -56,7 +56,7 @@ sudo ./zimbra-install.sh --domain example.com
 Archive lớn được lưu trong **GitHub Releases**, còn checksum được lưu cả trong git và release. Kiểm tra bộ Ubuntu 24.04 tải thủ công:
 
 ```bash
-sha256sum -c zcs-10.1.20_GA_0326.UBUNTU24_64.20260821120929.tgz.sha256
+sha256sum -c zcs-10.1.21_GA_0426.UBUNTU24_64.20261002085539.tgz.sha256
 ```
 
 ### Quyền truy cập firewall
